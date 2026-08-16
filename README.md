@@ -4,9 +4,10 @@ Personal todos for the engineer: half Jira, half timetable. A private,
 local-first app. One user, offline-capable, synced across
 devices, with Siri and share-sheet access through iOS Shortcuts.
 
-Split out of [adarshambati.com](https://github.com/adarshambati1/adarshambati.com),
-which is the personal site it used to live inside. They share a design token
-file but deploy independently.
+Deploys to `todo.adarshambati.com`. Split out of
+[adarshambati.com](https://github.com/adarshambati1/adarshambati.com), the
+personal site it used to live inside — they share a design token file but
+deploy independently.
 
 ## Why it's built this way
 
