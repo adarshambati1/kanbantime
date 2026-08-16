@@ -44,10 +44,10 @@ chk "logout POST same Org"  "$(curl -s -o /dev/null -w %{http_code} -X POST -H "
 echo "== sync: push then pull (bearer) =="
 T1=$(uuidgen); T2=$(uuidgen)
 NOW=$(($(date +%s)*1000))
-st() { echo "{\"title\":$1,\"done\":$2,\"notes\":$3,\"due\":$3,\"deleted\":$4}"; }
+st() { echo "{\"title\":$1,\"done\":$2,\"notes\":$3,\"due\":$3,\"deleted\":$4,\"column\":$1,\"rank\":$1,\"minutes\":$1}"; }
 R=$(curl -s "${A[@]}" -X POST $B/api/sync "${JSON[@]}" -d "{\"cursor\":0,\"changes\":[
-  {\"id\":\"$T1\",\"title\":\"buy milk\",\"notes\":\"\",\"done\":0,\"due\":null,\"deleted\":0,\"ts\":$(st $NOW $NOW $NOW $NOW)},
-  {\"id\":\"$T2\",\"title\":\"call mom\",\"notes\":\"\",\"done\":0,\"due\":null,\"deleted\":0,\"ts\":$(st $NOW $NOW $NOW $NOW)}]}")
+  {\"id\":\"$T1\",\"title\":\"buy milk\",\"notes\":\"\",\"done\":0,\"due\":null,\"deleted\":0,\"column\":\"backlog\",\"rank\":\"m\",\"minutes\":30,\"ts\":$(st $NOW $NOW $NOW $NOW)},
+  {\"id\":\"$T2\",\"title\":\"call mom\",\"notes\":\"\",\"done\":0,\"due\":null,\"deleted\":0,\"column\":\"backlog\",\"rank\":\"m\",\"minutes\":30,\"ts\":$(st $NOW $NOW $NOW $NOW)}]}")
 chk "both records echoed" "$(echo "$R" | python3 -c "
 import json,sys
 ids={c['id'] for c in json.load(sys.stdin)['changes']}
@@ -55,16 +55,16 @@ print('$T1' in ids and '$T2' in ids)")" True
 CUR=$(echo "$R" | python3 -c 'import json,sys;print(json.load(sys.stdin)["cursor"])')
 chk "pull at cursor empty" "$(curl -s "${A[@]}" -X POST $B/api/sync "${JSON[@]}" -d "{\"cursor\":$CUR,\"changes\":[]}" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["changes"]))')" 0
 chk "idempotent re-push"   "$(curl -s "${A[@]}" -X POST $B/api/sync "${JSON[@]}" -d "{\"cursor\":$CUR,\"changes\":[
-  {\"id\":\"$T1\",\"title\":\"buy milk\",\"notes\":\"\",\"done\":0,\"due\":null,\"deleted\":0,\"ts\":$(st $NOW $NOW $NOW $NOW)}]}" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["changes"]))')" 0
+  {\"id\":\"$T1\",\"title\":\"buy milk\",\"notes\":\"\",\"done\":0,\"due\":null,\"deleted\":0,\"column\":\"backlog\",\"rank\":\"m\",\"minutes\":30,\"ts\":$(st $NOW $NOW $NOW $NOW)}]}" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["changes"]))')" 0
 
 echo "== field-level merge (the whole point) =="
 # Device A checks the box at T+2000. Device B renames the title at T+1000.
 # Neither write may clobber the other.
 LATER=$((NOW+2000)); MID=$((NOW+1000))
 curl -s -o /dev/null "${A[@]}" -X POST $B/api/sync "${JSON[@]}" -d "{\"cursor\":$CUR,\"changes\":[
-  {\"id\":\"$T1\",\"title\":\"buy milk\",\"notes\":\"\",\"done\":1,\"due\":null,\"deleted\":0,\"ts\":$(st $NOW $LATER $NOW $NOW)}]}"
+  {\"id\":\"$T1\",\"title\":\"buy milk\",\"notes\":\"\",\"done\":1,\"due\":null,\"deleted\":0,\"column\":\"backlog\",\"rank\":\"m\",\"minutes\":30,\"ts\":$(st $NOW $LATER $NOW $NOW)}]}"
 R2=$(curl -s "${A[@]}" -X POST $B/api/sync "${JSON[@]}" -d "{\"cursor\":0,\"changes\":[
-  {\"id\":\"$T1\",\"title\":\"buy oat milk\",\"notes\":\"\",\"done\":0,\"due\":null,\"deleted\":0,\"ts\":$(st $MID $MID $NOW $NOW)}]}")
+  {\"id\":\"$T1\",\"title\":\"buy oat milk\",\"notes\":\"\",\"done\":0,\"due\":null,\"deleted\":0,\"column\":\"backlog\",\"rank\":\"m\",\"minutes\":30,\"ts\":$(st $MID $MID $NOW $NOW)}]}")
 chk "title from B, done from A" "$(echo "$R2" | python3 -c "
 import json,sys
 for c in json.load(sys.stdin)['changes']:
@@ -73,7 +73,7 @@ for c in json.load(sys.stdin)['changes']:
 echo "== tombstone =="
 DEL=$((NOW+3000))
 curl -s -o /dev/null "${A[@]}" -X POST $B/api/sync "${JSON[@]}" -d "{\"cursor\":0,\"changes\":[
-  {\"id\":\"$T2\",\"title\":\"call mom\",\"notes\":\"\",\"done\":0,\"due\":null,\"deleted\":1,\"ts\":$(st $NOW $NOW $NOW $DEL)}]}"
+  {\"id\":\"$T2\",\"title\":\"call mom\",\"notes\":\"\",\"done\":0,\"due\":null,\"deleted\":1,\"column\":\"backlog\",\"rank\":\"m\",\"minutes\":30,\"ts\":$(st $NOW $NOW $NOW $DEL)}]}"
 chk "delete propagates" "$(curl -s "${A[@]}" -X POST $B/api/sync "${JSON[@]}" -d '{"cursor":0,"changes":[]}' | python3 -c "
 import json,sys
 print([c['deleted'] for c in json.load(sys.stdin)['changes'] if c['id']=='$T2'][0])")" 1
@@ -85,6 +85,29 @@ chk "bad bearer 401"     "$(curl -s -o /dev/null -w %{http_code} -X POST $B/api/
 chk "list speaks"        "$(curl -s "$B/api/list?format=text" "${A[@]}" | grep -c 'dry cleaning')" 1
 chk "empty title 400"    "$(curl -s -o /dev/null -w %{http_code} -X POST $B/api/quick-add "${A[@]}" -d '   ')" 400
 chk "deleted not spoken" "$(curl -s "$B/api/list?format=text" "${A[@]}" | grep -c 'call mom')" 0
+
+echo "== board fields =="
+# The board and timetable columns must survive a round trip.
+BT=$(uuidgen)
+curl -s -o /dev/null "${A[@]}" -X POST $B/api/sync "${JSON[@]}" -d "{\"cursor\":0,\"changes\":[
+  {\"id\":\"$BT\",\"title\":\"ship the board\",\"notes\":\"\",\"done\":0,\"due\":null,\"deleted\":0,\"column\":\"today\",\"rank\":\"q\",\"minutes\":45,\"ts\":$(st $NOW $NOW $NOW $NOW)}]}"
+chk "column round-trips"  "$(curl -s "${A[@]}" -X POST $B/api/sync "${JSON[@]}" -d '{"cursor":0,"changes":[]}' | python3 -c "
+import json,sys
+print([c['column'] for c in json.load(sys.stdin)['changes'] if c['id']=='$BT'][0])")" today
+chk "rank round-trips"    "$(curl -s "${A[@]}" -X POST $B/api/sync "${JSON[@]}" -d '{"cursor":0,"changes":[]}' | python3 -c "
+import json,sys
+print([c['rank'] for c in json.load(sys.stdin)['changes'] if c['id']=='$BT'][0])")" q
+chk "minutes round-trips" "$(curl -s "${A[@]}" -X POST $B/api/sync "${JSON[@]}" -d '{"cursor":0,"changes":[]}' | python3 -c "
+import json,sys
+print([c['minutes'] for c in json.load(sys.stdin)['changes'] if c['id']=='$BT'][0])")" 45
+# A move is one field write, so it must merge without disturbing the title.
+MOVED=$((NOW+5000))
+curl -s -o /dev/null "${A[@]}" -X POST $B/api/sync "${JSON[@]}" -d "{\"cursor\":0,\"changes\":[
+  {\"id\":\"$BT\",\"title\":\"ship the board\",\"notes\":\"\",\"done\":0,\"due\":null,\"deleted\":0,\"column\":\"doing\",\"rank\":\"q\",\"minutes\":45,\"ts\":{\"title\":$NOW,\"done\":$NOW,\"notes\":$NOW,\"due\":$NOW,\"deleted\":$NOW,\"column\":$MOVED,\"rank\":$NOW,\"minutes\":$NOW}}]}"
+chk "move merges cleanly"  "$(curl -s "${A[@]}" -X POST $B/api/sync "${JSON[@]}" -d '{"cursor":0,"changes":[]}' | python3 -c "
+import json,sys
+c=[c for c in json.load(sys.stdin)['changes'] if c['id']=='$BT'][0]
+print(c['column'], c['title'])")" "doing ship the board"
 
 echo "== pwa =="
 chk "manifest start_url" "$(curl -s $B/manifest.webmanifest | python3 -c 'import json,sys;print(json.load(sys.stdin)["start_url"])')" /

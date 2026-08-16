@@ -1,3 +1,5 @@
+import { rankBetween } from './rank';
+
 /**
  * Client-side local-first store.
  *
@@ -7,7 +9,16 @@
  * run yet.
  */
 
-export const FIELDS = ['title', 'notes', 'done', 'due', 'deleted'] as const;
+export const FIELDS = [
+  'title',
+  'notes',
+  'done',
+  'due',
+  'deleted',
+  'column',
+  'rank',
+  'minutes',
+] as const;
 export type Field = (typeof FIELDS)[number];
 
 export interface Todo {
@@ -17,6 +28,12 @@ export interface Todo {
   done: number;
   due: string | null;
   deleted: number;
+  /** Board column id. */
+  column: string;
+  /** Fractional rank within the column — see src/lib/rank.ts. */
+  rank: string;
+  /** Planned duration in minutes, for the timetable. */
+  minutes: number;
   ts: Partial<Record<Field, number>>;
   /** Local-only: set when this record has unpushed changes. Stripped on send. */
   dirty?: number;
@@ -67,8 +84,12 @@ export async function list(): Promise<Todo[]> {
 
 const stamp = (t: Todo) => Math.max(0, ...Object.values(t.ts ?? {}));
 
-export async function add(title: string): Promise<Todo> {
+export async function add(title: string, column = 'backlog'): Promise<Todo> {
   const now = Date.now();
+  // Append: rank after whatever is currently last in that column.
+  const existing = (await getAll()).filter((t) => !t.deleted && t.column === column);
+  const last = existing.map((t) => t.rank).sort().pop() ?? null;
+
   const t: Todo = {
     id: crypto.randomUUID(),
     title: title.trim(),
@@ -76,11 +97,30 @@ export async function add(title: string): Promise<Todo> {
     done: 0,
     due: null,
     deleted: 0,
+    column,
+    rank: rankBetween(last, null),
+    minutes: 30,
     ts: Object.fromEntries(FIELDS.map((f) => [f, now])) as Todo['ts'],
     dirty: 1,
   };
   await put(t);
   return t;
+}
+
+/**
+ * Move a card to a position in a column.
+ *
+ * Takes the neighbours it should land between rather than an index, so this is
+ * a single field write on a single row — see src/lib/rank.ts for why that
+ * matters to the sync model.
+ */
+export async function move(
+  id: string,
+  column: string,
+  before: string | null,
+  after: string | null,
+): Promise<void> {
+  await update(id, { column, rank: rankBetween(before, after) });
 }
 
 /** Patch a record. Only the fields you pass get new timestamps. */
@@ -131,6 +171,9 @@ function merge(local: Todo | undefined, incoming: Todo): Todo {
     done: wins('done'),
     due: wins('due'),
     deleted: wins('deleted'),
+    column: wins('column'),
+    rank: wins('rank'),
+    minutes: wins('minutes'),
     ts,
   };
 }

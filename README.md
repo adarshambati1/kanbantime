@@ -1,6 +1,7 @@
-# todo.adarshambati.com
+# Kanban Time
 
-A private, local-first todo app. One user, offline-capable, synced across
+Personal todos for the engineer: half Jira, half timetable. A private,
+local-first app. One user, offline-capable, synced across
 devices, with Siri and share-sheet access through iOS Shortcuts.
 
 Split out of [adarshambati.com](https://github.com/adarshambati1/adarshambati.com),
@@ -135,19 +136,40 @@ npm run dev   # one terminal
 npm test      # another
 ```
 
-33 checks: route gating, the OAuth handshake, the sync protocol, field-level
-merge, tombstones, the Siri endpoints and PWA wiring. The Google round-trip
-itself isn't covered — it needs a real browser and account.
+37 checks: route gating, the OAuth handshake, the sync protocol, field-level
+merge, tombstones, the board fields, the Siri endpoints and PWA wiring. The
+Google round-trip itself isn't covered — it needs a real browser and account.
 
-## Next
+## The board model
 
-- **Board** — kanban columns. Needs `column` and `rank` on each todo, which
-  touches the schema, the sync protocol and both merge functions. Use fractional
-  ranks, not integer indices: with per-field last-write-wins, integer positions
-  make one drag rewrite every row below it.
+Every card carries `column`, `rank` and `minutes` alongside the usual fields,
+and all three sync with the same per-field merge as everything else.
+
+`rank` is a **fractional index** — a short string sorted lexicographically, with
+inserts finding a value between two neighbours. See `src/lib/rank.ts`. The
+reason is the sync model: with integer positions, dragging one card renumbers
+every card below it, which is a dozen conflicting writes for one gesture. A
+fractional rank makes a reorder exactly one field on one row, so two devices
+reordering different cards merge cleanly instead of fighting.
+
+`npm run test:rank` property-tests it: 500 appends, 300 inserts into a single
+gap, 200 prepends, all asserted to sort strictly where intended.
+
+Known characteristic, documented rather than hidden: repeatedly inserting into
+the *same* gap grows the string about a character per insert. Real reordering
+spreads out, so it doesn't bite in practice, and re-seeding a column with
+`initialRanks()` resets it.
+
+## Still to build
+
+- **Board UI** — columns with drag between them. A drop is two field writes
+  (`column` and `rank`) and they must land in one sync push, or a half-applied
+  move shows up on another device.
 - **Timetable** — the last column laid out from a start time, draggable and
-  resizable. Needs `duration` and `startAt`.
-- **Agent** — natural language over the board, driving the same API the UI does
-  rather than a parallel path.
+  resizable. Decide upfront whether the timetable *owns* that column's order or
+  mirrors the board's; two sources of truth for one ordering will bite.
+- **Agent** — natural language over the board, and over the board's own
+  presentation. It should drive the same API the UI does rather than a parallel
+  path, so both converge on the same state. Needs an OpenRouter key.
 - Web push for due reminders. The installed-PWA plumbing is already there.
 - Rate limiting on the OAuth callback.

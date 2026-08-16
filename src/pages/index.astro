@@ -7,7 +7,7 @@ export const prerender = false;
 const email: string | null = readSession(Astro.cookies.get(COOKIE)?.value);
 ---
 
-<App title="Todo" email={email}>
+<App title="Kanban Time" email={email}>
   <div class="head">
     <h1>Today</h1>
     <span id="status" class="status" aria-live="polite"></span>

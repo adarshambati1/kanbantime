@@ -1,4 +1,5 @@
 import { createClient, type Client } from '@libsql/client';
+import { rankBetween } from './rank';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -20,7 +21,16 @@ import { dirname } from 'node:path';
  * title on your laptop merges cleanly instead of one write clobbering the other.
  */
 
-export const FIELDS = ['title', 'notes', 'done', 'due', 'deleted'] as const;
+export const FIELDS = [
+  'title',
+  'notes',
+  'done',
+  'due',
+  'deleted',
+  'column',
+  'rank',
+  'minutes',
+] as const;
 export type Field = (typeof FIELDS)[number];
 
 export interface Todo {
@@ -30,6 +40,19 @@ export interface Todo {
   done: number;
   due: string | null;
   deleted: number;
+  /** Board column id. */
+  column: string;
+  /**
+   * Fractional rank within the column, sorted lexicographically.
+   *
+   * Fractional, not an integer index, because conflict resolution here is
+   * per-field last-write-wins: with integer positions one drag rewrites every
+   * card below it, which is a dozen conflicting writes for one gesture. A
+   * fractional rank makes a reorder exactly one field change on one row.
+   */
+  rank: string;
+  /** Planned duration in minutes, for the timetable. */
+  minutes: number;
   ts: Partial<Record<Field, number>>;
   seq: number;
 }
@@ -69,9 +92,13 @@ export function db(): Promise<Client> {
           due     TEXT,
           deleted INTEGER NOT NULL DEFAULT 0,
           ts      TEXT    NOT NULL DEFAULT '{}',
-          seq     INTEGER NOT NULL
+          seq     INTEGER NOT NULL,
+          col     TEXT    NOT NULL DEFAULT 'backlog',
+          rank    TEXT    NOT NULL DEFAULT 'm',
+          minutes INTEGER NOT NULL DEFAULT 30
         )`,
         `CREATE INDEX IF NOT EXISTS idx_todos_seq ON todos(seq)`,
+        `CREATE INDEX IF NOT EXISTS idx_todos_col ON todos(col, rank)`,
         `CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
         `INSERT OR IGNORE INTO meta (k, v) VALUES ('seq', '0')`,
       ],
@@ -91,6 +118,10 @@ const hydrate = (r: Row): Todo => ({
   done: Number(r.done ?? 0),
   due: r.due == null ? null : String(r.due),
   deleted: Number(r.deleted ?? 0),
+  // `column` is reserved in SQL, so the table calls it `col`.
+  column: String(r.col ?? 'backlog'),
+  rank: String(r.rank ?? 'm'),
+  minutes: Number(r.minutes ?? 30),
   ts: safeParse(String(r.ts ?? '{}')),
   seq: Number(r.seq ?? 0),
 });
@@ -157,6 +188,9 @@ function merge(existing: Todo | undefined, incoming: TodoInput): { row: TodoInpu
     done: wins('done'),
     due: wins('due'),
     deleted: wins('deleted'),
+    column: wins('column'),
+    rank: wins('rank'),
+    minutes: wins('minutes'),
     ts,
   };
 
@@ -191,12 +225,13 @@ export async function push(
 
         seq += 1;
         await tx.execute({
-          sql: `INSERT INTO todos (id, title, notes, done, due, deleted, ts, seq)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          sql: `INSERT INTO todos (id, title, notes, done, due, deleted, ts, seq, col, rank, minutes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                   title=excluded.title, notes=excluded.notes, done=excluded.done,
                   due=excluded.due, deleted=excluded.deleted, ts=excluded.ts,
-                  seq=excluded.seq`,
+                  seq=excluded.seq, col=excluded.col, rank=excluded.rank,
+                  minutes=excluded.minutes`,
           args: [
             row.id,
             String(row.title ?? ''),
@@ -206,6 +241,9 @@ export async function push(
             row.deleted ? 1 : 0,
             JSON.stringify(row.ts ?? {}),
             seq,
+            String(row.column || 'backlog'),
+            String(row.rank || 'm'),
+            Math.max(5, Math.round(Number(row.minutes) || 30)),
           ],
         });
       }
@@ -230,15 +268,35 @@ export async function push(
 }
 
 /** Create a single todo server-side. Used by the Shortcuts/Siri endpoint. */
-export async function quickAdd(title: string): Promise<Todo> {
+export async function quickAdd(title: string, column = 'backlog'): Promise<Todo> {
   const now = Date.now();
   const id = crypto.randomUUID();
   const ts = Object.fromEntries(FIELDS.map((f) => [f, now])) as Todo['ts'];
-  await push([{ id, title, notes: '', done: 0, due: null, deleted: 0, ts }], await currentSeq());
+  // Land at the end of the column so a dictated task doesn't jump the queue.
+  const rank = await rankAfterLast(column);
+  await push(
+    [{ id, title, notes: '', done: 0, due: null, deleted: 0, column, rank, minutes: 30, ts }],
+    await currentSeq(),
+  );
 
   const c = await db();
   const res = await c.execute({ sql: `SELECT * FROM todos WHERE id = ?`, args: [id] });
   return hydrate(res.rows[0] as unknown as Row);
+}
+
+/** The largest rank currently in a column, or null if it's empty. */
+async function lastRank(column: string): Promise<string | null> {
+  const c = await db();
+  const res = await c.execute({
+    sql: `SELECT rank FROM todos WHERE col = ? AND deleted = 0 ORDER BY rank DESC LIMIT 1`,
+    args: [column],
+  });
+  const row = res.rows[0] as unknown as Row | undefined;
+  return row ? String(row.rank) : null;
+}
+
+async function rankAfterLast(column: string): Promise<string> {
+  return rankBetween(await lastRank(column), null);
 }
 
 /** Open todos, most recent first. Used by the Siri "what's on my list" read. */

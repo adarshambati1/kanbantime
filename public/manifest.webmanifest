@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "Todo",
-  "short_name": "Todo",
+  "name": "Kanban Time",
+  "short_name": "Kanban",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

@@ -8,9 +8,10 @@
     "build": "node --env-file-if-exists=.env node_modules/astro/bin/astro.mjs build",
     "preview": "node --env-file-if-exists=.env node_modules/astro/bin/astro.mjs preview",
     "check": "astro check",
-    "verify": "astro check && astro build",
+    "verify": "astro check && astro build && node scripts/test-rank.mjs",
     "icons": "node scripts/make-icons.mjs",
-    "test": "bash scripts/smoke.sh"
+    "test": "bash scripts/smoke.sh",
+    "test:rank": "node scripts/test-rank.mjs"
   },
   "dependencies": {
     "@astrojs/vercel": "^11.0.5",
@@ -22,5 +23,7 @@
     "@astrojs/check": "^0.9.10",
     "typescript": "^6.0.3"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  }
 }
