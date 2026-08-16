@@ -137,11 +137,16 @@ async function patch(
   fields: Partial<Pick<Todo, Field>>,
   allowPlacement = false,
 ): Promise<void> {
+  const existing = await getOne(id);
+  if (!existing) return;
+  // Checked *after* the only await in this function, immediately before
+  // `fields` is read — not before it, as a first pass had it. An `await`
+  // between the check and the read is a real gap a mutated/proxied object
+  // could exploit; putting them back to back with nothing async in between
+  // closes that, since nothing can run and mutate `fields` mid-expression.
   if (!allowPlacement && 'placement' in fields) {
     throw new Error('update() cannot write placement — use move() instead');
   }
-  const existing = await getOne(id);
-  if (!existing) return;
   const now = Date.now();
   const ts = { ...existing.ts };
   for (const k of Object.keys(fields) as Field[]) ts[k] = now;
