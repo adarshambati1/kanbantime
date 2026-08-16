@@ -1,4 +1,5 @@
 import { rankBetween } from './rank';
+import { buildPlacement, type MoveInput, type Placement } from './cards';
 
 /**
  * Client-side local-first store.
@@ -9,16 +10,9 @@ import { rankBetween } from './rank';
  * run yet.
  */
 
-export const FIELDS = [
-  'title',
-  'notes',
-  'done',
-  'due',
-  'deleted',
-  'column',
-  'rank',
-  'minutes',
-] as const;
+export type { Placement } from './cards';
+
+export const FIELDS = ['title', 'notes', 'done', 'due', 'deleted', 'placement', 'minutes'] as const;
 export type Field = (typeof FIELDS)[number];
 
 export interface Todo {
@@ -28,10 +22,7 @@ export interface Todo {
   done: number;
   due: string | null;
   deleted: number;
-  /** Board column id. */
-  column: string;
-  /** Fractional rank within the column — see src/lib/rank.ts. */
-  rank: string;
+  placement: Placement;
   /** Planned duration in minutes, for the timetable. */
   minutes: number;
   ts: Partial<Record<Field, number>>;
@@ -82,13 +73,22 @@ export async function list(): Promise<Todo[]> {
     .sort((a, b) => a.done - b.done || stamp(b) - stamp(a));
 }
 
+/** Visible todos in one column, ordered by rank (kanban stacking / tray
+ *  order) — used by the board, not the flat list. */
+export async function listColumn(column: string): Promise<Todo[]> {
+  const all = await getAll();
+  return all
+    .filter((t) => !t.deleted && t.placement.column === column)
+    .sort((a, b) => (a.placement.rank < b.placement.rank ? -1 : a.placement.rank > b.placement.rank ? 1 : 0));
+}
+
 const stamp = (t: Todo) => Math.max(0, ...Object.values(t.ts ?? {}));
 
 export async function add(title: string, column = 'backlog'): Promise<Todo> {
   const now = Date.now();
   // Append: rank after whatever is currently last in that column.
-  const existing = (await getAll()).filter((t) => !t.deleted && t.column === column);
-  const last = existing.map((t) => t.rank).sort().pop() ?? null;
+  const existing = await listColumn(column);
+  const last = existing.length > 0 ? existing[existing.length - 1]!.placement.rank : null;
 
   const t: Todo = {
     id: crypto.randomUUID(),
@@ -97,8 +97,7 @@ export async function add(title: string, column = 'backlog'): Promise<Todo> {
     done: 0,
     due: null,
     deleted: 0,
-    column,
-    rank: rankBetween(last, null),
+    placement: { column, rank: rankBetween(last, null), start: null },
     minutes: 30,
     ts: Object.fromEntries(FIELDS.map((f) => [f, now])) as Todo['ts'],
     dirty: 1,
@@ -108,19 +107,16 @@ export async function add(title: string, column = 'backlog'): Promise<Todo> {
 }
 
 /**
- * Move a card to a position in a column.
- *
- * Takes the neighbours it should land between rather than an index, so this is
- * a single field write on a single row — see src/lib/rank.ts for why that
- * matters to the sync model.
+ * Move a card — the only place a client writes `placement`. Constructs the
+ * new value via the shared `buildPlacement()` (src/lib/cards.ts), so every
+ * transition (kanban reorder, kanban<->timetable, timetable retime) follows
+ * PLAN.md §1.3 exactly, and lands as one field write with one timestamp.
  */
-export async function move(
-  id: string,
-  column: string,
-  before: string | null,
-  after: string | null,
-): Promise<void> {
-  await update(id, { column, rank: rankBetween(before, after) });
+export async function move(id: string, input: MoveInput): Promise<void> {
+  const existing = await getOne(id);
+  if (!existing) return;
+  const placement = buildPlacement(existing.placement, input);
+  await update(id, { placement });
 }
 
 /** Patch a record. Only the fields you pass get new timestamps. */
@@ -147,7 +143,7 @@ function clean(todo: Todo): Todo {
 /**
  * Field-level last-write-wins, matching the server's rule exactly.
  *
- * Written out field by field rather than looped with a cast: it's the same five
+ * Written out field by field rather than looped with a cast: it's the same
  * comparisons either way, and this version is checked by the compiler, so
  * renaming a field can't silently skip the merge for it.
  */
@@ -171,8 +167,7 @@ function merge(local: Todo | undefined, incoming: Todo): Todo {
     done: wins('done'),
     due: wins('due'),
     deleted: wins('deleted'),
-    column: wins('column'),
-    rank: wins('rank'),
+    placement: wins('placement'),
     minutes: wins('minutes'),
     ts,
   };

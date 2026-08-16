@@ -1,7 +1,13 @@
 import { createClient, type Client } from '@libsql/client';
 import { rankBetween } from './rank';
+import { DEFAULT_COLUMNS, fallbackColumn, type ColumnDef } from './columns';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+
+/** Everything below only needs `execute` — both a `Client` and a
+ *  `Transaction` satisfy this, so the same helpers work whether they're
+ *  called at top level or from inside a `push()` transaction. */
+type Executor = { execute: Client['execute'] };
 
 /**
  * Server-side store for todos.
@@ -19,18 +25,24 @@ import { dirname } from 'node:path';
  * Device clocks are still used, but only for conflict resolution, and per field
  * rather than per row (`ts`). Checking a box on your phone while editing the
  * title on your laptop merges cleanly instead of one write clobbering the other.
+ *
+ * `column`/`rank`/`start` are NOT three independent fields — see `Placement`
+ * below and PLAN.md §1.1. Merging them independently let a concurrent move and
+ * a concurrent retime recombine into a card nobody actually produced; they're
+ * one field, `placement`, with one timestamp, so a write wins or loses whole.
  */
 
-export const FIELDS = [
-  'title',
-  'notes',
-  'done',
-  'due',
-  'deleted',
-  'column',
-  'rank',
-  'minutes',
-] as const;
+export interface Placement {
+  column: string;
+  /** Fractional rank — meaningful for a kanban column, or for a card sitting
+   *  in a timetable column's unscheduled tray. See src/lib/rank.ts. */
+  rank: string;
+  /** Minutes since local midnight, or null — meaningful only once a card is
+   *  placed on a timetable column's axis. */
+  start: number | null;
+}
+
+export const FIELDS = ['title', 'notes', 'done', 'due', 'deleted', 'placement', 'minutes'] as const;
 export type Field = (typeof FIELDS)[number];
 
 export interface Todo {
@@ -40,17 +52,7 @@ export interface Todo {
   done: number;
   due: string | null;
   deleted: number;
-  /** Board column id. */
-  column: string;
-  /**
-   * Fractional rank within the column, sorted lexicographically.
-   *
-   * Fractional, not an integer index, because conflict resolution here is
-   * per-field last-write-wins: with integer positions one drag rewrites every
-   * card below it, which is a dozen conflicting writes for one gesture. A
-   * fractional rank makes a reorder exactly one field change on one row.
-   */
-  rank: string;
+  placement: Placement;
   /** Planned duration in minutes, for the timetable. */
   minutes: number;
   ts: Partial<Record<Field, number>>;
@@ -77,6 +79,31 @@ function connect(): Client {
   return createClient(authToken ? { url, authToken } : { url });
 }
 
+type Row = Record<string, unknown>;
+
+/**
+ * Adds `placement` (and backfills it from the legacy `col`/`rank` columns)
+ * to a database that predates it. Idempotent and safe under a concurrent
+ * cold start racing the same `ALTER TABLE` — the loser's statement fails
+ * with "duplicate column name", which is expected and swallowed; either way
+ * the backfill `UPDATE` below still runs, since it's a no-op wherever
+ * `placement` is already set.
+ */
+async function migrate(c: Client): Promise<void> {
+  const cols = await c.execute(`PRAGMA table_info(todos)`);
+  const have = new Set((cols.rows as unknown as Row[]).map((r) => String(r.name)));
+  if (!have.has('placement')) {
+    try {
+      await c.execute(`ALTER TABLE todos ADD COLUMN placement TEXT`);
+    } catch (err) {
+      if (!String(err).includes('duplicate column name')) throw err;
+    }
+  }
+  await c.execute(
+    `UPDATE todos SET placement = json_object('column', col, 'rank', rank, 'start', NULL) WHERE placement IS NULL`,
+  );
+}
+
 /** Connects and creates the schema once per warm instance. */
 export function db(): Promise<Client> {
   if (_ready) return _ready;
@@ -101,15 +128,40 @@ export function db(): Promise<Client> {
         `CREATE INDEX IF NOT EXISTS idx_todos_col ON todos(col, rank)`,
         `CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
         `INSERT OR IGNORE INTO meta (k, v) VALUES ('seq', '0')`,
+        `CREATE TABLE IF NOT EXISTS prefs (k TEXT PRIMARY KEY, v TEXT NOT NULL, ts INTEGER NOT NULL)`,
+        `CREATE TABLE IF NOT EXISTS agent_proposals (
+          id         TEXT PRIMARY KEY,
+          actions    TEXT NOT NULL,
+          status     TEXT NOT NULL DEFAULT 'pending',
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL
+        )`,
       ],
       'write',
     );
+    await migrate(c);
     return c;
   })();
   return _ready;
 }
 
-type Row = Record<string, unknown>;
+function parsePlacement(raw: unknown, legacyCol: unknown, legacyRank: unknown): Placement {
+  if (typeof raw === 'string') {
+    try {
+      const v = JSON.parse(raw);
+      if (v && typeof v === 'object') {
+        return {
+          column: typeof v.column === 'string' && v.column ? v.column : 'backlog',
+          rank: typeof v.rank === 'string' && v.rank ? v.rank : 'm',
+          start: typeof v.start === 'number' ? v.start : null,
+        };
+      }
+    } catch {
+      /* fall through to the legacy shadow columns below */
+    }
+  }
+  return { column: String(legacyCol ?? 'backlog'), rank: String(legacyRank ?? 'm'), start: null };
+}
 
 const hydrate = (r: Row): Todo => ({
   id: String(r.id),
@@ -118,9 +170,7 @@ const hydrate = (r: Row): Todo => ({
   done: Number(r.done ?? 0),
   due: r.due == null ? null : String(r.due),
   deleted: Number(r.deleted ?? 0),
-  // `column` is reserved in SQL, so the table calls it `col`.
-  column: String(r.col ?? 'backlog'),
-  rank: String(r.rank ?? 'm'),
+  placement: parsePlacement(r.placement, r.col, r.rank),
   minutes: Number(r.minutes ?? 30),
   ts: safeParse(String(r.ts ?? '{}')),
   seq: Number(r.seq ?? 0),
@@ -154,10 +204,71 @@ export async function currentSeq(): Promise<number> {
   return Number((res.rows[0] as unknown as Row | undefined)?.v ?? 0);
 }
 
+/** The board's current column config — falls back to the defaults if the
+ *  `prefs` row is missing, empty, or malformed. Never throws. */
+async function currentColumns(c: Executor): Promise<ColumnDef[]> {
+  const res = await c.execute(`SELECT v FROM prefs WHERE k = 'columns'`);
+  const raw = (res.rows[0] as unknown as Row | undefined)?.v;
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed as ColumnDef[];
+    } catch {
+      /* fall through to defaults */
+    }
+  }
+  return DEFAULT_COLUMNS;
+}
+
+/**
+ * Validates and repairs a `placement` value in place, on every write path
+ * (`/api/sync`, `quickAdd`, and later the agent), unconditionally — even for
+ * a deleted (tombstoned) row, so a resurrection can never bring back a card
+ * pointing at a column that no longer exists (PLAN.md §1.2/§1.4).
+ *
+ * Never rejects the row — rejecting would break the sync protocol's
+ * always-accept-and-merge guarantee offline resilience depends on. A bad
+ * `column` is remapped to the fallback; a missing/empty `rank` is
+ * regenerated; an out-of-range `start` is dropped to `null`.
+ */
+async function repairPlacement(c: Executor, p: Placement): Promise<Placement> {
+  const columns = await currentColumns(c);
+  const validIds = new Set(columns.map((col) => col.id));
+  const fixedColumn = validIds.has(p.column) ? p.column : fallbackColumn(columns);
+
+  let fixedRank = p.rank;
+  if (typeof fixedRank !== 'string' || fixedRank.length === 0) {
+    fixedRank = await rankAfterLast(c, fixedColumn);
+  }
+
+  const fixedStart =
+    typeof p.start === 'number' && Number.isInteger(p.start) && p.start >= 0 && p.start <= 1439
+      ? p.start
+      : null;
+
+  return { column: fixedColumn, rank: fixedRank, start: fixedStart };
+}
+
+function normalizePlacement(raw: unknown): Placement {
+  if (raw && typeof raw === 'object') {
+    const v = raw as Record<string, unknown>;
+    return {
+      column: typeof v.column === 'string' && v.column ? v.column : 'backlog',
+      rank: typeof v.rank === 'string' ? v.rank : '',
+      start: typeof v.start === 'number' ? v.start : null,
+    };
+  }
+  return { column: 'backlog', rank: '', start: null };
+}
+
 /**
  * Field-level last-write-wins. For each field independently, the write with the
  * newer timestamp survives. Ties break on the incoming value so a retried push
  * is idempotent rather than flapping.
+ *
+ * `placement` is one field like any other here — the whole object wins or
+ * loses together, which is what closes the incoherent-recombination bug
+ * described in PLAN.md §1.1.
  */
 function merge(existing: Todo | undefined, incoming: TodoInput): { row: TodoInput; changed: boolean } {
   if (!existing) return { row: incoming, changed: true };
@@ -177,7 +288,7 @@ function merge(existing: Todo | undefined, incoming: TodoInput): { row: TodoInpu
     // still compare correctly. This counts as a change in its own right — if we
     // only persisted on a differing value, the advanced stamp would be dropped
     // and a later write landing between the two timestamps could wrongly win.
-    if (inTs > exTs || base[f] !== incoming[f]) changed = true;
+    if (inTs > exTs || JSON.stringify(base[f]) !== JSON.stringify(incoming[f])) changed = true;
     ts[f] = inTs;
   }
 
@@ -188,8 +299,7 @@ function merge(existing: Todo | undefined, incoming: TodoInput): { row: TodoInpu
     done: wins('done'),
     due: wins('due'),
     deleted: wins('deleted'),
-    column: wins('column'),
-    rank: wins('rank'),
+    placement: wins('placement'),
     minutes: wins('minutes'),
     ts,
   };
@@ -214,7 +324,20 @@ export async function push(
       const seqRow = await tx.execute(`SELECT v FROM meta WHERE k='seq'`);
       let seq = Number((seqRow.rows[0] as unknown as Row | undefined)?.v ?? 0);
 
-      for (const item of incoming) {
+      for (const raw of incoming) {
+        // Normalize and validate `placement` once, at ingestion, before merge
+        // ever runs — not just on the base/local side, so an incoming payload
+        // missing the field (a stale client) can't let an undefined value win.
+        const placement = await repairPlacement(tx, normalizePlacement(raw.placement));
+        const item: TodoInput = {
+          ...raw,
+          placement,
+          // Nothing above bounds `minutes` on the high end today — an
+          // unbounded value (typo, bad agent call) could otherwise dominate
+          // or break the timetable layout (PLAN.md §3).
+          minutes: Math.min(720, Math.max(5, Math.round(Number(raw.minutes) || 30))),
+        };
+
         const found = await tx.execute({
           sql: `SELECT * FROM todos WHERE id = ?`,
           args: [item.id],
@@ -225,13 +348,13 @@ export async function push(
 
         seq += 1;
         await tx.execute({
-          sql: `INSERT INTO todos (id, title, notes, done, due, deleted, ts, seq, col, rank, minutes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          sql: `INSERT INTO todos (id, title, notes, done, due, deleted, ts, seq, col, rank, minutes, placement)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                   title=excluded.title, notes=excluded.notes, done=excluded.done,
                   due=excluded.due, deleted=excluded.deleted, ts=excluded.ts,
                   seq=excluded.seq, col=excluded.col, rank=excluded.rank,
-                  minutes=excluded.minutes`,
+                  minutes=excluded.minutes, placement=excluded.placement`,
           args: [
             row.id,
             String(row.title ?? ''),
@@ -241,9 +364,14 @@ export async function push(
             row.deleted ? 1 : 0,
             JSON.stringify(row.ts ?? {}),
             seq,
-            String(row.column || 'backlog'),
-            String(row.rank || 'm'),
-            Math.max(5, Math.round(Number(row.minutes) || 30)),
+            // `col`/`rank` are derived, non-authoritative shadow columns —
+            // written from `placement` in this same statement so they can
+            // never drift out of sync, kept only so `idx_todos_col` still
+            // indexes a plain column for a single-column read.
+            row.placement.column,
+            row.placement.rank,
+            row.minutes,
+            JSON.stringify(row.placement),
           ],
         });
       }
@@ -272,21 +400,34 @@ export async function quickAdd(title: string, column = 'backlog'): Promise<Todo>
   const now = Date.now();
   const id = crypto.randomUUID();
   const ts = Object.fromEntries(FIELDS.map((f) => [f, now])) as Todo['ts'];
+  const c = await db();
   // Land at the end of the column so a dictated task doesn't jump the queue.
-  const rank = await rankAfterLast(column);
+  const rank = await rankAfterLast(c, column);
   await push(
-    [{ id, title, notes: '', done: 0, due: null, deleted: 0, column, rank, minutes: 30, ts }],
+    [
+      {
+        id,
+        title,
+        notes: '',
+        done: 0,
+        due: null,
+        deleted: 0,
+        placement: { column, rank, start: null },
+        minutes: 30,
+        ts,
+      },
+    ],
     await currentSeq(),
   );
 
-  const c = await db();
   const res = await c.execute({ sql: `SELECT * FROM todos WHERE id = ?`, args: [id] });
   return hydrate(res.rows[0] as unknown as Row);
 }
 
-/** The largest rank currently in a column, or null if it's empty. */
-async function lastRank(column: string): Promise<string | null> {
-  const c = await db();
+/** The largest rank currently in a column, or null if it's empty. Reads the
+ *  derived `col`/`rank` shadow columns — a query optimization only, never
+ *  independently written or timestamped, so it can't drift from `placement`. */
+async function lastRank(c: Executor, column: string): Promise<string | null> {
   const res = await c.execute({
     sql: `SELECT rank FROM todos WHERE col = ? AND deleted = 0 ORDER BY rank DESC LIMIT 1`,
     args: [column],
@@ -295,8 +436,8 @@ async function lastRank(column: string): Promise<string | null> {
   return row ? String(row.rank) : null;
 }
 
-async function rankAfterLast(column: string): Promise<string> {
-  return rankBetween(await lastRank(column), null);
+async function rankAfterLast(c: Executor, column: string): Promise<string> {
+  return rankBetween(await lastRank(c, column), null);
 }
 
 /** Open todos, most recent first. Used by the Siri "what's on my list" read. */

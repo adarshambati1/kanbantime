@@ -6,7 +6,7 @@ import { COOKIE, authorize, sameOrigin } from './lib/auth';
  * deployment is the private app. /api/auth/* has to stay open, since that's how
  * a credential is obtained in the first place.
  */
-const PROTECTED = [/^\/$/, /^\/api\/(sync|quick-add|list)(\/|$)/];
+const PROTECTED = [/^\/$/, /^\/api\/(sync|quick-add|list|prefs)(\/|$)/];
 
 const json = (data: unknown, status: number) =>
   new Response(JSON.stringify(data), {
