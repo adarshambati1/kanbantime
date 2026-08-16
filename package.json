@@ -1,0 +1,26 @@
+{
+  "name": "todo-adarshambati",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env node_modules/astro/bin/astro.mjs dev",
+    "build": "node --env-file-if-exists=.env node_modules/astro/bin/astro.mjs build",
+    "preview": "node --env-file-if-exists=.env node_modules/astro/bin/astro.mjs preview",
+    "check": "astro check",
+    "verify": "astro check && astro build",
+    "icons": "node scripts/make-icons.mjs",
+    "test": "bash scripts/smoke.sh"
+  },
+  "dependencies": {
+    "@astrojs/vercel": "^11.0.5",
+    "@libsql/client": "^0.17.4",
+    "@fontsource-variable/hanken-grotesk": "^5.3.0",
+    "astro": "^7.2.2"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.10",
+    "typescript": "^6.0.3"
+  },
+  "engines": { "node": ">=20" }
+}

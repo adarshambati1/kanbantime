@@ -1,0 +1,22 @@
+node_modules/
+dist/
+.astro/
+.vercel/
+.output/
+
+# local database
+/data/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+
+# secrets — never commit
+.env
+.env.*
+!.env.example
+
+.DS_Store
+.idea/
+.vscode/
+*.log

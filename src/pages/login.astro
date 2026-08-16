@@ -1,0 +1,85 @@
+---
+import App from '../layouts/App.astro';
+import { oauthConfigured } from '../lib/auth';
+
+export const prerender = false;
+
+const params = Astro.url.searchParams;
+const rawNext = params.get('next') ?? '/';
+const next: string = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/';
+const error: string | null = params.get('error');
+
+const MESSAGES: Readonly<Record<string, string>> = {
+  denied: "That Google account isn't on the allowlist.",
+  cancelled: 'Sign-in was cancelled.',
+  state: 'That sign-in link expired. Try again.',
+  exchange: "Google couldn't confirm that sign-in. Try again.",
+  missing: 'Something was missing from the sign-in response. Try again.',
+  out: 'Signed out.',
+};
+
+const message: string | null = error ? (MESSAGES[error] ?? 'Sign-in failed. Try again.') : null;
+const configured: boolean = oauthConfigured();
+---
+
+<App title="Sign in — Todo">
+  <div class="panel">
+    <h1>Todo</h1>
+    <p class="panel__note u-muted">Private. One account.</p>
+
+    {
+      configured ? (
+        <a class="panel__btn" href={`/api/auth/login?next=${encodeURIComponent(next)}`}>
+          Continue with Google
+        </a>
+      ) : (
+        <p class="panel__note u-muted">
+          OAuth isn't configured yet. Set <code>GOOGLE_CLIENT_ID</code>,{' '}
+          <code>GOOGLE_CLIENT_SECRET</code>, <code>ALLOWED_EMAILS</code> and{' '}
+          <code>AUTH_SECRET</code> — see the README.
+        </p>
+      )
+    }
+
+    {message && <p class:list={['panel__msg', { 'panel__msg--err': error !== 'out' }]}>{message}</p>}
+  </div>
+</App>
+
+<style>
+  .panel {
+    max-width: 22rem;
+    margin-top: var(--space-8);
+  }
+
+  .panel__note {
+    margin-top: var(--space-2);
+    font-size: var(--text-sm);
+  }
+
+  .panel__btn {
+    display: inline-block;
+    margin-top: var(--space-6);
+    padding: var(--space-3) var(--space-5);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+    color: var(--color-bg);
+    background: var(--color-text);
+    border-radius: var(--radius-md);
+    text-decoration: none;
+  }
+
+  .panel__btn:hover {
+    color: var(--color-bg);
+    background: #000;
+  }
+
+  .panel__msg {
+    margin-top: var(--space-4);
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
+  }
+
+  .panel__msg--err {
+    color: var(--color-danger);
+  }
+</style>

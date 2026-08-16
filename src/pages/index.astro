@@ -1,0 +1,255 @@
+---
+import App from '../layouts/App.astro';
+import { COOKIE, readSession } from '../lib/auth';
+
+export const prerender = false;
+
+const email: string | null = readSession(Astro.cookies.get(COOKIE)?.value);
+---
+
+<App title="Todo" email={email}>
+  <div class="head">
+    <h1>Today</h1>
+    <span id="status" class="status" aria-live="polite"></span>
+  </div>
+
+  <form id="add" class="add" autocomplete="off">
+    <input id="title" class="add__field" placeholder="Add a task" aria-label="Add a task" autofocus />
+    <button type="submit" class="add__btn">Add</button>
+  </form>
+
+  <ul id="list" class="list"></ul>
+  <p id="empty" class="empty u-subtle" hidden>Nothing here yet.</p>
+
+</App>
+
+<style>
+  .head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+
+  .status {
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+  }
+
+  .add {
+    display: flex;
+    gap: var(--space-2);
+    margin: var(--space-6) 0 var(--space-5);
+  }
+
+  .add__field {
+    flex: 1;
+    padding: var(--space-3) var(--space-4);
+    background: var(--color-bg);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-md);
+  }
+
+  .add__field::placeholder {
+    color: var(--color-text-subtle);
+  }
+
+  .add__btn {
+    padding: var(--space-3) var(--space-5);
+    font-weight: var(--weight-medium);
+    color: var(--color-bg);
+    background: var(--color-text);
+    border: 1px solid var(--color-text);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+  }
+
+  .add__btn:hover {
+    background: #000;
+  }
+
+  .list {
+    list-style: none;
+    padding: 0;
+  }
+
+  .empty {
+    font-size: var(--text-sm);
+  }
+
+
+
+
+
+
+  /*
+    Rows are built with createElement, so Astro's scoping attribute never lands
+    on them and scoped rules wouldn't match. These have to be :global, kept
+    under .list so nothing leaks to the rest of the page.
+  */
+  .list :global(li) {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3) 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .list :global(li.is-done .todo__text) {
+    color: var(--color-text-subtle);
+    text-decoration: line-through;
+  }
+
+  .list :global(.todo__text) {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--text-sm);
+    word-break: break-word;
+  }
+
+  .list :global(.todo__check) {
+    flex: none;
+    width: 1.05rem;
+    height: 1.05rem;
+    accent-color: var(--color-text);
+    cursor: pointer;
+  }
+
+  .list :global(.todo__del) {
+    flex: none;
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--text-lg);
+    line-height: 1;
+    color: var(--color-text-subtle);
+    background: none;
+    border: 0;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity var(--transition), color var(--transition);
+  }
+
+  .list :global(li:hover .todo__del),
+  .list :global(.todo__del:focus-visible) {
+    opacity: 1;
+  }
+
+  .list :global(.todo__del:hover) {
+    color: var(--color-danger);
+  }
+
+  /* Touch devices have no hover, so the control must always be visible. */
+  @media (hover: none) {
+    .list :global(.todo__del) {
+      opacity: 0.55;
+    }
+  }
+</style>
+
+<script>
+  import { list, add, update, remove, sync, type Todo } from '../lib/store';
+
+  const $list = document.getElementById('list') as HTMLUListElement;
+  const $empty = document.getElementById('empty') as HTMLParagraphElement;
+  const $form = document.getElementById('add') as HTMLFormElement;
+  const $title = document.getElementById('title') as HTMLInputElement;
+  const $status = document.getElementById('status') as HTMLSpanElement;
+
+  /**
+   * Runs an async UI action and surfaces failures.
+   *
+   * Without this, a rejected IndexedDB write (private browsing, quota exceeded)
+   * becomes an unhandled rejection: the click appears to do nothing and there's
+   * no signal anywhere the user can see.
+   */
+  function act(fn: () => Promise<void>): void {
+    void fn().catch((error: unknown) => {
+      console.error(error);
+      $status.textContent = "couldn't save";
+    });
+  }
+
+  function row(todo: Todo): HTMLLIElement {
+    const li = document.createElement('li');
+    if (todo.done) li.classList.add('is-done');
+
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.className = 'todo__check';
+    check.checked = Boolean(todo.done);
+    check.setAttribute('aria-label', todo.title);
+    check.addEventListener('change', () => {
+      act(async () => {
+        await update(todo.id, { done: check.checked ? 1 : 0 });
+        await render();
+        void flush();
+      });
+    });
+
+    const text = document.createElement('span');
+    text.className = 'todo__text';
+    text.textContent = todo.title;
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'todo__del';
+    del.textContent = '×';
+    del.setAttribute('aria-label', `Delete ${todo.title}`);
+    del.addEventListener('click', () => {
+      act(async () => {
+        await remove(todo.id);
+        await render();
+        void flush();
+      });
+    });
+
+    li.append(check, text, del);
+    return li;
+  }
+
+  async function render(): Promise<void> {
+    const todos = await list();
+    $empty.hidden = todos.length > 0;
+    $list.replaceChildren(...todos.map(row));
+  }
+
+  // Sync never blocks the UI. It reports into the status line and re-renders
+  // only if the server actually told us something new.
+  async function flush(): Promise<void> {
+    $status.textContent = 'syncing…';
+    try {
+      if (await sync()) await render();
+      $status.textContent = navigator.onLine ? '' : 'offline';
+    } catch {
+      $status.textContent = 'offline — saved locally';
+    }
+  }
+
+  $form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const title = $title.value.trim();
+    if (!title) return;
+    $title.value = '';
+    act(async () => {
+      await add(title);
+      await render();
+      void flush();
+    });
+  });
+
+  // Foreground sync rather than background sync: iOS is unreliable about the
+  // latter, and this covers every case you'd actually notice.
+  // visibilitychange fires on document, so bind it there rather than relying on
+  // it bubbling to window.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') void flush();
+  });
+  addEventListener('online', () => void flush());
+  addEventListener('pageshow', () => void flush());
+  setInterval(() => {
+    if (document.visibilityState === 'visible') void flush();
+  }, 60_000);
+
+  await render();
+  void flush();
+</script>

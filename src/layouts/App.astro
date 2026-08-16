@@ -1,0 +1,130 @@
+---
+import '../styles/index.css';
+
+interface Props {
+  title: string;
+  /** Signed-in address, shown in the footer. Absent on the login screen. */
+  email?: string | null;
+}
+
+const { title, email = null } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>{title}</title>
+    <!-- Private by definition: nothing here should ever be indexed. -->
+    <meta name="robots" content="noindex, nofollow" />
+
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/icon-180.png" />
+    <link rel="icon" href="/icons/icon-192.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="theme-color" content="#ffffff" />
+  </head>
+  <body>
+    <header class="bar">
+      <a class="bar__brand" href="/">Todo</a>
+      <a class="bar__site" href="https://adarshambati.com">adarshambati.com</a>
+    </header>
+
+    <main class="page">
+      <slot />
+    </main>
+
+    {
+      email && (
+        <footer class="foot">
+          <span>{email}</span>
+          <form method="POST" action="/api/auth/logout">
+            <button type="submit" class="foot__signout">Sign out</button>
+          </form>
+        </footer>
+      )
+    }
+
+    <script>
+      // The service worker is what makes the app usable offline, so unlike the
+      // marketing site this one does register it — but never in dev, where
+      // module URLs aren't content-hashed and a cache-first worker serves
+      // stale code on every reload.
+      if ('serviceWorker' in navigator && import.meta.env.PROD) {
+        addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+      }
+    </script>
+  </body>
+</html>
+
+<style>
+  .bar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-5);
+    height: var(--header-height);
+    padding: 0 var(--space-5);
+    background: color-mix(in srgb, var(--color-bg) 88%, transparent);
+    backdrop-filter: saturate(180%) blur(12px);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .bar__brand {
+    font-weight: var(--weight-semibold);
+    letter-spacing: var(--tracking-tight);
+    text-decoration: none;
+  }
+
+  .bar__site {
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
+    text-decoration: none;
+  }
+
+  .bar__site:hover {
+    color: var(--color-text);
+  }
+
+  .page {
+    max-width: 34rem;
+    margin: 0 auto;
+    padding: var(--space-7) var(--space-5) var(--space-9);
+  }
+
+  .foot {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-4);
+    align-items: baseline;
+    justify-content: center;
+    padding: 0 var(--space-5) var(--space-7);
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+  }
+
+  .foot form {
+    display: inline;
+  }
+
+  /* A button because signing out changes state and must be a POST. */
+  .foot__signout {
+    padding: 0;
+    font-size: inherit;
+    color: inherit;
+    background: none;
+    border: 0;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: var(--color-border-strong);
+    text-underline-offset: 0.18em;
+  }
+
+  .foot__signout:hover {
+    color: var(--color-text);
+  }
+</style>
