@@ -199,12 +199,36 @@ missing `:global` on the quick-add box meant `position: absolute` never took
 effect, which surfaced as a confusing "the axis scrolls to the wrong place on
 focus" bug before the actual cause — a plain unpositioned `<div>` — was found).
 
+## The agent
+
+`POST /api/agent` — natural language over card content and the board's own
+presentation. Cookie-only (not the Shortcuts bearer token; this is a
+chat-style feature, not a Siri one). `src/lib/agentTools.ts` is the closed
+tool surface — the same eight operations documented in `PLAN.md` §4.1,
+executed through `push()`/`prefs.ts` like any other write, never raw SQL.
+`src/lib/agentProposals.ts` implements the propose/confirm flow for bulky
+actions (§4.2): a server-persisted, single-use proposal, atomically consumed
+before anything is applied, each action re-validated against current state on
+confirm rather than assumed still true. The client entry point
+(`src/pages/index.astro`, the `#agent` block) is a plain text field in the
+board header — no chat-bubble aesthetic — with the conversation, the
+proposal review, and the confirmed `{applied, skipped}` summary rendered
+inline in it, per §2.2.
+
+**Blocked on a real `OPENROUTER_API_KEY`.** The previous one was pasted into
+a chat transcript by accident and was revoked — never reused, never will be.
+Without a key, `agentConfigured()` reports false, `/api/agent` returns 503
+rather than failing opaquely, and the board simply doesn't render the entry
+point (same pattern `oauthConfigured()` already uses for Google sign-in).
+Everything *except* the live model call has been exercised: the propose/
+confirm/expire/skip mechanics, the auth gate (cookie required, bearer
+explicitly rejected), and the full client UI flow were all verified by
+mocking the `/api/agent` response in a real browser — add a key and the
+actual OpenRouter round trip is the one remaining untested path.
+
 ## Still to build
 
-- **Agent** — natural language over the board, and over the board's own
-  presentation (`prefs`, columns). Routes through the same `cards.ts`
-  transition layer the UI uses, not a parallel path. Needs a new OpenRouter
-  key — the previous one was pasted into a chat transcript by accident and
-  was revoked; it must never be reused.
 - Web push for due reminders. The installed-PWA plumbing is already there.
-- Rate limiting on the OAuth callback.
+- Rate limiting on the OAuth callback — done for `/api/agent` specifically
+  (`src/lib/rateLimit.ts`, a simple in-memory window, single-user so no
+  per-caller bucketing); the callback itself still doesn't have one.

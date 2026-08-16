@@ -448,3 +448,24 @@ export async function openTodos(): Promise<Todo[]> {
   );
   return res.rows.map((r) => hydrate(r as unknown as Row));
 }
+
+/** A single card by id, or undefined. Used by the agent tools, which patch
+ *  one card at a time and need its current state to build the patch from. */
+export async function getCard(id: string): Promise<Todo | undefined> {
+  const c = await db();
+  const res = await c.execute({ sql: `SELECT * FROM todos WHERE id = ?`, args: [id] });
+  const row = res.rows[0] as unknown as Row | undefined;
+  return row ? hydrate(row) : undefined;
+}
+
+/** Cards in one column, not deleted, ordered by rank. Used by the agent's
+ *  list_cards tool and by bulk operations that need "everything currently
+ *  in X" without a client round trip. */
+export async function cardsInColumn(column: string): Promise<Todo[]> {
+  const c = await db();
+  const res = await c.execute({
+    sql: `SELECT * FROM todos WHERE col = ? AND deleted = 0 ORDER BY rank ASC`,
+    args: [column],
+  });
+  return res.rows.map((r) => hydrate(r as unknown as Row));
+}

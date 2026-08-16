@@ -118,12 +118,28 @@ export async function add(
   return t;
 }
 
-/** Writes any field, including `placement` — not exported. `move()` below
- *  is the only caller allowed to touch `placement`; the public `update()`
- *  is typed to exclude it, which is what actually stops a generic patch
- *  call from bypassing `buildPlacement()`'s transition rules and reopening
- *  the bug placement-as-one-field exists to close (PLAN.md §2/§4.1). */
-async function patch(id: string, fields: Partial<Pick<Todo, Field>>): Promise<void> {
+/**
+ * Writes any field — not exported. `move()` below is the only caller
+ * allowed to pass `placement` (via `allowPlacement`); every other caller
+ * goes through the public `update()`, which forbids it both at the type
+ * level and here, at runtime.
+ *
+ * The runtime check is not redundant with `update()`'s type restriction —
+ * TypeScript types are erased at runtime and a caller can always defeat a
+ * static guard with a type assertion (`as { title: string }`, widening the
+ * value's *apparent* type without changing what it actually is at
+ * runtime). No type-level trick closes that; only checking the actual
+ * object here does. This is what makes "only move() writes placement" true
+ * rather than merely "the compiler doesn't warn about it in common cases."
+ */
+async function patch(
+  id: string,
+  fields: Partial<Pick<Todo, Field>>,
+  allowPlacement = false,
+): Promise<void> {
+  if (!allowPlacement && 'placement' in fields) {
+    throw new Error('update() cannot write placement — use move() instead');
+  }
   const existing = await getOne(id);
   if (!existing) return;
   const now = Date.now();
@@ -142,14 +158,22 @@ export async function move(id: string, input: MoveInput): Promise<void> {
   const existing = await getOne(id);
   if (!existing) return;
   const placement = buildPlacement(existing.placement, input);
-  await patch(id, { placement });
+  await patch(id, { placement }, true);
 }
 
-/** Patch a record — every field except `placement`. Only the fields you
- *  pass get new timestamps. */
+/**
+ * Patch a record — every field except `placement`. Only the fields you pass
+ * get new timestamps.
+ *
+ * The `& { placement?: never }` type catches the common mistake (a literal,
+ * or a variable typed to include `placement`) at the call site, in the
+ * editor, before it ever runs. `patch()`'s runtime check above is the part
+ * that's actually unconditional — it catches everything else, including a
+ * deliberate type assertion that defeats the static guard.
+ */
 export async function update(
   id: string,
-  fields: Partial<Pick<Todo, Exclude<Field, 'placement'>>>,
+  fields: Partial<Pick<Todo, Exclude<Field, 'placement'>>> & { placement?: never },
 ): Promise<void> {
   await patch(id, fields);
 }

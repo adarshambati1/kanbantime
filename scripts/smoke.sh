@@ -167,6 +167,13 @@ curl -s -o /dev/null "${A[@]}" -X POST $B/api/sync "${JSON[@]}" -d "{\"cursor\":
 chk "removal ok once column is empty" "$(curl -s -o /dev/null -w %{http_code} "${A[@]}" "${JSON[@]}" -X POST $B/api/prefs -d "$NO_TODAY,\"ts\":$((CLEARED+1))}")" 200
 chk "retired id rejected on reuse" "$(curl -s -o /dev/null -w %{http_code} "${A[@]}" "${JSON[@]}" -X POST $B/api/prefs -d '{"columns":[{"id":"backlog","label":"Backlog","kind":"kanban"},{"id":"doing","label":"Doing","kind":"kanban"},{"id":"done","label":"Done","kind":"kanban"},{"id":"today","label":"Today Again","kind":"timetable"}],"ts":'"$((CLEARED+2))"'}')" 409
 
+echo "== agent =="
+# Cookie-only, deliberately (PLAN.md §4.1) — this is a chat feature, not a
+# Siri one. No live OPENROUTER_API_KEY here, so this only covers the auth
+# gate, not a real model round trip.
+chk "no auth -> 401"     "$(curl -s -o /dev/null -w %{http_code} -X POST $B/api/agent "${JSON[@]}" -d '{"message":"hi"}')" 401
+chk "bearer rejected"    "$(curl -s -o /dev/null -w %{http_code} -X POST $B/api/agent "${A[@]}" "${JSON[@]}" -d '{"message":"hi"}')" 401
+
 echo "== pwa =="
 chk "manifest start_url" "$(curl -s $B/manifest.webmanifest | python3 -c 'import json,sys;print(json.load(sys.stdin)["start_url"])')" /
 chk "sw.js served"       "$(curl -s -o /dev/null -w %{http_code} $B/sw.js)" 200

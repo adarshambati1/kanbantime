@@ -2,11 +2,13 @@
 import App from '../layouts/App.astro';
 import { COOKIE, readSession } from '../lib/auth';
 import { getColumns } from '../lib/prefs';
+import { agentConfigured } from '../lib/agent';
 
 export const prerender = false;
 
 const email: string | null = readSession(Astro.cookies.get(COOKIE)?.value);
 const columns = await getColumns();
+const agentReady = agentConfigured();
 
 // 1px per minute (60px/hour, 1440px for the full day) — a plain constant,
 // not yet a preference (PLAN.md §3 leaves the axis range/grid hardcoded for
@@ -26,6 +28,23 @@ const hourLabel = (h: number): string => {
     <h1>Board</h1>
     <span id="status" class="status" aria-live="polite"></span>
   </div>
+
+  {
+    agentReady && (
+      <div class="agent" id="agent">
+        <form class="agent__form" id="agent-form" autocomplete="off">
+          <textarea
+            class="agent__field"
+            id="agent-input"
+            rows={1}
+            placeholder="Ask the board…"
+            aria-label="Ask the board"
+          />
+        </form>
+        <div class="agent__panel" id="agent-panel" hidden />
+      </div>
+    )
+  }
 
   <div class="board" id="board" data-columns={JSON.stringify(columns)}>
     {
@@ -194,6 +213,132 @@ const hourLabel = (h: number): string => {
 
   .tray__toggle[aria-expanded='true'] + .column__list {
     max-height: none;
+  }
+
+  /* ---- agent ---- */
+
+  .agent {
+    margin-top: var(--space-4);
+  }
+
+  .agent__field {
+    width: 100%;
+    padding: var(--space-2) var(--space-1);
+    font-family: inherit;
+    font-size: var(--text-sm);
+    color: inherit;
+    background: none;
+    border: 0;
+    border-bottom: 1px solid var(--color-border);
+    resize: none;
+  }
+
+  .agent__field::placeholder {
+    color: var(--color-text-subtle);
+  }
+
+  .agent__field:focus-visible {
+    outline: none;
+    border-bottom-color: var(--color-border-strong);
+  }
+
+  .agent__panel {
+    margin-top: var(--space-3);
+    font-size: var(--text-sm);
+  }
+
+  .agent__panel :global(.agent__msg) {
+    padding: var(--space-2) 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .agent__panel :global(.agent__msg--user) {
+    color: var(--color-text-muted);
+  }
+
+  .agent__panel :global(.agent__status) {
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+  }
+
+  .agent__panel :global(.agent__error) {
+    color: var(--color-danger);
+  }
+
+  .agent__panel :global(.agent__retry) {
+    margin-left: var(--space-2);
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-color: var(--color-border-strong);
+    cursor: pointer;
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+  }
+
+  .agent__panel :global(.proposal) {
+    padding: var(--space-3) 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .agent__panel :global(.proposal__list) {
+    margin: var(--space-2) 0;
+    padding-left: var(--space-4);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+  }
+
+  .agent__panel :global(.proposal__actions) {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    margin-top: var(--space-2);
+  }
+
+  .agent__panel :global(.proposal__confirm) {
+    padding: var(--space-2) var(--space-4);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    color: var(--color-bg);
+    background: var(--color-text);
+    border: 0;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+  }
+
+  .agent__panel :global(.proposal__cancel) {
+    padding: 0;
+    font-size: var(--text-xs);
+    color: inherit;
+    background: none;
+    border: 0;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: var(--color-border-strong);
+  }
+
+  .agent__panel :global(.proposal__expiry) {
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+  }
+
+  .agent__panel :global(.proposal__skipped-toggle) {
+    padding: 0;
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+    background: none;
+    border: 0;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: var(--color-border-strong);
+  }
+
+  .agent__panel :global(.proposal__skipped-list) {
+    margin-top: var(--space-1);
+    padding-left: var(--space-4);
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
   }
 
   /* ---- timetable axis ---- */
@@ -767,4 +912,291 @@ const hourLabel = (h: number): string => {
       if (scrollHost) scrollHost.scrollTop = VIEWPORT_START_HOUR * 60 * axisConfig(track!).pxPerMinute;
     }
   });
+
+  // ---- agent (PLAN.md §2.2/§4) ----
+
+  interface ChatMessage {
+    role: 'user' | 'assistant';
+    content: string;
+  }
+
+  interface PendingProposal {
+    id: string;
+    actions: { description: string }[];
+    expiresAt: number;
+  }
+
+  const $agent = document.getElementById('agent') as HTMLDivElement | null;
+  if ($agent) {
+    const $form = document.getElementById('agent-form') as HTMLFormElement;
+    const $input = document.getElementById('agent-input') as HTMLTextAreaElement;
+    const $panel = document.getElementById('agent-panel') as HTMLDivElement;
+
+    // Session-only, per PLAN.md §2.2 — cleared when the panel collapses, not
+    // persisted as a chat log. `pending` is the one deliberate exception: an
+    // outstanding proposal is state, not transcript, and survives collapse.
+    let history: ChatMessage[] = [];
+    let pending: PendingProposal | null = null;
+    let expiryTimer: ReturnType<typeof setInterval> | null = null;
+    let lastMessage = '';
+
+    function open(): void {
+      $panel.hidden = false;
+    }
+
+    function collapse(): void {
+      if (pending) return; // an outstanding proposal keeps the panel meaningful
+      $panel.hidden = true;
+      $panel.replaceChildren();
+      history = [];
+    }
+
+    function autoGrow(): void {
+      $input.style.height = 'auto';
+      $input.style.height = `${Math.min(160, $input.scrollHeight)}px`;
+    }
+
+    function addMessage(role: 'user' | 'assistant', text: string): void {
+      const el = document.createElement('p');
+      el.className = role === 'user' ? 'agent__msg agent__msg--user' : 'agent__msg';
+      el.textContent = text;
+      $panel.appendChild(el);
+      $panel.scrollTop = $panel.scrollHeight;
+    }
+
+    function setThinking(on: boolean): void {
+      $input.disabled = on;
+      $panel.querySelector('.agent__status')?.remove();
+      if (on) {
+        const s = document.createElement('p');
+        s.className = 'agent__msg agent__status';
+        s.textContent = 'thinking…';
+        $panel.appendChild(s);
+        $panel.scrollTop = $panel.scrollHeight;
+      }
+    }
+
+    function showError(message: string): void {
+      const el = document.createElement('p');
+      el.className = 'agent__msg agent__error';
+      el.textContent = message;
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'agent__retry';
+      retry.textContent = 'retry';
+      retry.addEventListener('click', () => {
+        el.remove();
+        void send(lastMessage, false);
+      });
+      el.appendChild(retry);
+      $panel.appendChild(el);
+      $panel.scrollTop = $panel.scrollHeight;
+    }
+
+    function clearExpiryTimer(): void {
+      if (expiryTimer) clearInterval(expiryTimer);
+      expiryTimer = null;
+    }
+
+    function renderProposal(proposal: PendingProposal): void {
+      pending = proposal;
+      $panel.querySelectorAll('.proposal').forEach((el) => el.remove());
+
+      const box = document.createElement('div');
+      box.className = 'proposal';
+
+      const list = document.createElement('ul');
+      list.className = 'proposal__list';
+      for (const a of proposal.actions) {
+        const li = document.createElement('li');
+        li.textContent = a.description;
+        list.appendChild(li);
+      }
+      box.appendChild(list);
+
+      const actions = document.createElement('div');
+      actions.className = 'proposal__actions';
+
+      const confirm = document.createElement('button');
+      confirm.type = 'button';
+      confirm.className = 'proposal__confirm';
+      confirm.textContent = 'Confirm';
+      confirm.addEventListener('click', () => void confirmPending());
+
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'proposal__cancel';
+      cancel.textContent = 'Cancel';
+      cancel.addEventListener('click', () => {
+        clearExpiryTimer();
+        pending = null;
+        box.remove();
+      });
+
+      const expiry = document.createElement('span');
+      expiry.className = 'proposal__expiry';
+
+      actions.append(confirm, cancel, expiry);
+      box.appendChild(actions);
+      $panel.appendChild(box);
+      $panel.scrollTop = $panel.scrollHeight;
+
+      clearExpiryTimer();
+      const tick = () => {
+        const secs = Math.max(0, Math.round((proposal.expiresAt - Date.now()) / 1000));
+        expiry.textContent = `expires in ${secs}s`;
+        if (secs <= 0) {
+          clearExpiryTimer();
+          pending = null;
+          box.innerHTML = '';
+          const stale = document.createElement('p');
+          stale.textContent = 'this changed — ';
+          const again = document.createElement('button');
+          again.type = 'button';
+          again.className = 'agent__retry';
+          again.textContent = 'ask again';
+          again.addEventListener('click', () => {
+            box.remove();
+            void send(lastMessage, false);
+          });
+          stale.appendChild(again);
+          box.appendChild(stale);
+        }
+      };
+      tick();
+      expiryTimer = setInterval(tick, 1000);
+    }
+
+    async function confirmPending(): Promise<void> {
+      if (!pending) return;
+      const proposalId = pending.id;
+      clearExpiryTimer();
+      $panel.querySelectorAll('.proposal').forEach((el) => el.remove());
+      pending = null;
+      setThinking(true);
+      try {
+        const res = await fetch('/api/agent', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ confirmProposalId: proposalId }),
+        });
+        setThinking(false);
+        if (!res.ok) {
+          showError("couldn't apply that — try asking again");
+          return;
+        }
+        const body = (await res.json()) as {
+          applied: { description: string }[];
+          skipped: { description: string; reason: string }[];
+        };
+        const summary = document.createElement('p');
+        summary.className = 'agent__msg';
+        summary.textContent = `${body.applied.length} applied`;
+        if (body.skipped.length > 0) {
+          summary.textContent += ', ';
+          const toggle = document.createElement('button');
+          toggle.type = 'button';
+          toggle.className = 'proposal__skipped-toggle';
+          toggle.textContent = `${body.skipped.length} skipped`;
+          const skippedList = document.createElement('ul');
+          skippedList.className = 'proposal__skipped-list';
+          skippedList.hidden = true;
+          for (const s of body.skipped) {
+            const li = document.createElement('li');
+            li.textContent = `${s.description} — ${s.reason}`;
+            skippedList.appendChild(li);
+          }
+          toggle.addEventListener('click', () => {
+            skippedList.hidden = !skippedList.hidden;
+          });
+          summary.append(toggle);
+          $panel.appendChild(summary);
+          $panel.appendChild(skippedList);
+        } else {
+          $panel.appendChild(summary);
+        }
+        $panel.scrollTop = $panel.scrollHeight;
+        void flush();
+        await renderAll();
+      } catch {
+        setThinking(false);
+        showError("couldn't apply that —");
+      }
+    }
+
+    async function send(message: string, recordUserMessage = true): Promise<void> {
+      if (!message) return;
+      open();
+      lastMessage = message;
+      if (recordUserMessage) {
+        addMessage('user', message);
+        history.push({ role: 'user', content: message });
+      }
+      setThinking(true);
+      try {
+        const res = await fetch('/api/agent', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ message, history: history.slice(0, -1) }),
+        });
+        setThinking(false);
+        if (res.status === 503) {
+          showError('the agent needs an OpenRouter key first —');
+          return;
+        }
+        if (!res.ok) {
+          showError("that didn't go through —");
+          return;
+        }
+        const body = (await res.json()) as {
+          reply: string;
+          proposal?: { id: string; actions: { description: string }[]; expiresInSeconds: number };
+        };
+        if (body.reply) {
+          addMessage('assistant', body.reply);
+          history.push({ role: 'assistant', content: body.reply });
+        }
+        if (body.proposal) {
+          renderProposal({
+            id: body.proposal.id,
+            actions: body.proposal.actions,
+            expiresAt: Date.now() + body.proposal.expiresInSeconds * 1000,
+          });
+        }
+        await renderAll();
+        void flush();
+      } catch {
+        setThinking(false);
+        showError("couldn't reach the agent —");
+      }
+    }
+
+    $input.addEventListener('input', autoGrow);
+    $input.addEventListener('focus', open);
+
+    $form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const text = $input.value.trim();
+      if (!text) return;
+      $input.value = '';
+      autoGrow();
+      void send(text);
+    });
+
+    $input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        $form.requestSubmit();
+        return;
+      }
+      // Escape on an empty field collapses the panel — the one way to
+      // deliberately close it back down, per PLAN.md §2.2's "clears when
+      // the panel collapses" (an outstanding proposal blocks this, so it's
+      // never lost by an accidental Escape).
+      if (event.key === 'Escape' && !$input.value.trim()) {
+        $input.blur();
+        collapse();
+      }
+    });
+  }
 </script>
