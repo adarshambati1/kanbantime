@@ -161,16 +161,34 @@ the *same* gap grows the string about a character per insert. Real reordering
 spreads out, so it doesn't bite in practice, and re-seeding a column with
 `initialRanks()` resets it.
 
+## The board model, continued
+
+`column`, `rank`, and `start` (the timetable's clock position) aren't three
+independent fields — they're one, `placement`, merged as a whole. Independent
+per-field merge let a concurrent kanban move and a concurrent timetable
+retime recombine into a card neither device produced (the moved-to column
+with the pre-move start time survived a merge test built specifically to
+catch this — see the `placement is one field, not three` section of
+`scripts/smoke.sh`). A move is one gesture; it gets one timestamp.
+`src/lib/cards.ts`'s `buildPlacement()` is the only place a `Placement` gets
+constructed, so no other write path — including a future `update_card`
+patch — can bypass the transition rules and reopen that bug.
+
+Full design, written across three rounds of independent review (data-model
+correctness, daily-use interaction design, visual consistency with the rest
+of the site), lives in `PLAN.md`.
+
 ## Still to build
 
-- **Board UI** — columns with drag between them. A drop is two field writes
-  (`column` and `rank`) and they must land in one sync push, or a half-applied
-  move shows up on another device.
-- **Timetable** — the last column laid out from a start time, draggable and
-  resizable. Decide upfront whether the timetable *owns* that column's order or
-  mirrors the board's; two sources of truth for one ordering will bite.
+- **Timetable** — the `today` column currently renders as a plain stack, same
+  as the kanban columns (Phase 2 of `PLAN.md`'s rollout order). Phase 3 gives
+  it its own axis: a vertical day view reading `placement.start`, drag to
+  retime, resize to change `minutes`, an unscheduled tray for cards not yet
+  placed on the clock.
 - **Agent** — natural language over the board, and over the board's own
-  presentation. It should drive the same API the UI does rather than a parallel
-  path, so both converge on the same state. Needs an OpenRouter key.
+  presentation (`prefs`, columns). Routes through the same `cards.ts`
+  transition layer the UI uses, not a parallel path. Needs a new OpenRouter
+  key — the previous one was pasted into a chat transcript by accident and
+  was revoked; it must never be reused.
 - Web push for due reminders. The installed-PWA plumbing is already there.
 - Rate limiting on the OAuth callback.

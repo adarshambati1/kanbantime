@@ -1,26 +1,36 @@
 ---
 import App from '../layouts/App.astro';
 import { COOKIE, readSession } from '../lib/auth';
+import { getColumns } from '../lib/prefs';
 
 export const prerender = false;
 
 const email: string | null = readSession(Astro.cookies.get(COOKIE)?.value);
+const columns = await getColumns();
 ---
 
 <App title="Kanban Time" email={email}>
   <div class="head">
-    <h1>Today</h1>
+    <h1>Board</h1>
     <span id="status" class="status" aria-live="polite"></span>
   </div>
 
-  <form id="add" class="add" autocomplete="off">
-    <input id="title" class="add__field" placeholder="Add a task" aria-label="Add a task" autofocus />
-    <button type="submit" class="add__btn">Add</button>
-  </form>
-
-  <ul id="list" class="list"></ul>
-  <p id="empty" class="empty u-subtle" hidden>Nothing here yet.</p>
-
+  <div class="board" id="board" data-columns={JSON.stringify(columns)}>
+    {
+      columns.map((col) => (
+        <section class="column">
+          <div class="column__head">
+            <h2 class="column__label">{col.label}</h2>
+            <span class="column__count" data-count={col.id} />
+          </div>
+          <ul class="column__list" data-column={col.id} />
+          <form class="add" data-column={col.id} autocomplete="off">
+            <input class="add__field" placeholder="Add card" aria-label={`Add card to ${col.label}`} />
+          </form>
+        </section>
+      ))
+    }
+  </div>
 </App>
 
 <style>
@@ -36,78 +46,146 @@ const email: string | null = readSession(Astro.cookies.get(COOKIE)?.value);
     color: var(--color-text-subtle);
   }
 
-  .add {
+  .board {
     display: flex;
+    gap: var(--space-5);
+    margin-top: var(--space-6);
+    overflow-x: auto;
+    /* One column fills the screen on a phone, swipe/scroll between them —
+       the alternative (shrinking four columns to fit) makes every one of
+       them too narrow to read a title in. */
+    scroll-snap-type: x mandatory;
+    padding-bottom: var(--space-2);
+  }
+
+  .column {
+    flex: 0 0 82vw;
+    min-width: 0;
+    scroll-snap-align: start;
+  }
+
+  @media (min-width: 40rem) {
+    .board {
+      scroll-snap-type: none;
+    }
+    .column {
+      flex: 1 1 0;
+    }
+  }
+
+  .column__head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
     gap: var(--space-2);
-    margin: var(--space-6) 0 var(--space-5);
+    padding-bottom: var(--space-2);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .column__label {
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
+  }
+
+  .column__count {
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+  }
+
+  .column__list {
+    list-style: none;
+    min-height: var(--space-6);
+    padding: 0;
+  }
+
+  .add {
+    margin-top: var(--space-2);
   }
 
   .add__field {
-    flex: 1;
-    padding: var(--space-3) var(--space-4);
-    background: var(--color-bg);
-    border: 1px solid var(--color-border-strong);
-    border-radius: var(--radius-md);
+    width: 100%;
+    padding: var(--space-2) var(--space-1);
+    font-size: var(--text-sm);
+    color: inherit;
+    background: none;
+    border: 0;
+    border-bottom: 1px solid transparent;
   }
 
   .add__field::placeholder {
     color: var(--color-text-subtle);
   }
 
-  .add__btn {
-    padding: var(--space-3) var(--space-5);
-    font-weight: var(--weight-medium);
-    color: var(--color-bg);
-    background: var(--color-text);
-    border: 1px solid var(--color-text);
-    border-radius: var(--radius-md);
-    cursor: pointer;
+  .add__field:focus-visible {
+    outline: none;
+    border-bottom-color: var(--color-border-strong);
   }
 
-  .add__btn:hover {
-    background: #000;
-  }
-
-  .list {
-    list-style: none;
-    padding: 0;
-  }
-
-  .empty {
-    font-size: var(--text-sm);
-  }
-
-
-
-
-
-
-  /*
-    Rows are built with createElement, so Astro's scoping attribute never lands
-    on them and scoped rules wouldn't match. These have to be :global, kept
-    under .list so nothing leaks to the rest of the page.
-  */
-  .list :global(li) {
+  /* Rows are built with createElement, so Astro's scoping attribute never
+     lands on them — these have to be :global, kept under .board so nothing
+     leaks to the rest of the page. */
+  .board :global(.card) {
     display: flex;
     align-items: center;
-    gap: var(--space-3);
+    gap: var(--space-2);
     padding: var(--space-3) 0;
     border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg);
+    touch-action: pan-y;
   }
 
-  .list :global(li.is-done .todo__text) {
+  .board :global(.card--dragging) {
+    box-shadow: none;
+    border: 1px solid var(--color-border-strong);
+    background: var(--color-bg-subtle);
+    opacity: 0.92;
+  }
+
+  .board :global(.card--placeholder) {
+    border-bottom: 1px dashed var(--color-border-strong);
+  }
+
+  .board :global(.card__handle) {
+    flex: none;
+    width: 1.1rem;
+    text-align: center;
+    color: var(--color-text-subtle);
+    cursor: grab;
+    opacity: 0;
+    transition: opacity var(--transition);
+    touch-action: none;
+  }
+
+  .board :global(.card:hover .card__handle),
+  .board :global(.card__handle:focus-visible) {
+    opacity: 1;
+  }
+
+  @media (hover: none) {
+    .board :global(.card__handle) {
+      opacity: 0.55;
+    }
+  }
+
+  .board :global(.card.is-done .card__text) {
     color: var(--color-text-subtle);
     text-decoration: line-through;
   }
 
-  .list :global(.todo__text) {
+  .board :global(.card__text) {
     flex: 1;
     min-width: 0;
     font-size: var(--text-sm);
     word-break: break-word;
   }
 
-  .list :global(.todo__check) {
+  .board :global(.card__minutes) {
+    flex: none;
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+  }
+
+  .board :global(.card__check) {
     flex: none;
     width: 1.05rem;
     height: 1.05rem;
@@ -115,7 +193,7 @@ const email: string | null = readSession(Astro.cookies.get(COOKIE)?.value);
     cursor: pointer;
   }
 
-  .list :global(.todo__del) {
+  .board :global(.card__del) {
     flex: none;
     padding: var(--space-1) var(--space-2);
     font-size: var(--text-lg);
@@ -129,38 +207,42 @@ const email: string | null = readSession(Astro.cookies.get(COOKIE)?.value);
     transition: opacity var(--transition), color var(--transition);
   }
 
-  .list :global(li:hover .todo__del),
-  .list :global(.todo__del:focus-visible) {
+  .board :global(.card:hover .card__del),
+  .board :global(.card__del:focus-visible) {
     opacity: 1;
   }
 
-  .list :global(.todo__del:hover) {
+  .board :global(.card__del:hover) {
     color: var(--color-danger);
   }
 
-  /* Touch devices have no hover, so the control must always be visible. */
   @media (hover: none) {
-    .list :global(.todo__del) {
+    .board :global(.card__del) {
       opacity: 0.55;
     }
   }
 </style>
 
 <script>
-  import { list, add, update, remove, sync, type Todo } from '../lib/store';
+  import { listColumn, add, update, remove, move, sync, type Todo } from '../lib/store';
+  import { attachDrag, type DropResult } from '../lib/board';
 
-  const $list = document.getElementById('list') as HTMLUListElement;
-  const $empty = document.getElementById('empty') as HTMLParagraphElement;
-  const $form = document.getElementById('add') as HTMLFormElement;
-  const $title = document.getElementById('title') as HTMLInputElement;
+  interface Col {
+    id: string;
+    label: string;
+    kind: 'kanban' | 'timetable';
+  }
+
+  const $board = document.getElementById('board') as HTMLDivElement;
   const $status = document.getElementById('status') as HTMLSpanElement;
+  const columns = JSON.parse($board.dataset.columns || '[]') as Col[];
 
   /**
    * Runs an async UI action and surfaces failures.
    *
-   * Without this, a rejected IndexedDB write (private browsing, quota exceeded)
-   * becomes an unhandled rejection: the click appears to do nothing and there's
-   * no signal anywhere the user can see.
+   * Without this, a rejected IndexedDB write (private browsing, quota
+   * exceeded) becomes an unhandled rejection: the interaction appears to do
+   * nothing and there's no signal anywhere the user can see.
    */
   function act(fn: () => Promise<void>): void {
     void fn().catch((error: unknown) => {
@@ -169,48 +251,63 @@ const email: string | null = readSession(Astro.cookies.get(COOKIE)?.value);
     });
   }
 
-  function row(todo: Todo): HTMLLIElement {
+  function cardEl(todo: Todo): HTMLLIElement {
     const li = document.createElement('li');
+    li.className = 'card';
+    li.dataset.id = todo.id;
+    li.dataset.rank = todo.placement.rank;
     if (todo.done) li.classList.add('is-done');
+
+    const handle = document.createElement('span');
+    handle.className = 'card__handle';
+    handle.setAttribute('aria-hidden', 'true');
+    handle.textContent = '⠿';
 
     const check = document.createElement('input');
     check.type = 'checkbox';
-    check.className = 'todo__check';
+    check.className = 'card__check';
     check.checked = Boolean(todo.done);
     check.setAttribute('aria-label', todo.title);
     check.addEventListener('change', () => {
       act(async () => {
         await update(todo.id, { done: check.checked ? 1 : 0 });
-        await render();
+        await renderAll();
         void flush();
       });
     });
 
     const text = document.createElement('span');
-    text.className = 'todo__text';
+    text.className = 'card__text';
     text.textContent = todo.title;
 
     const del = document.createElement('button');
     del.type = 'button';
-    del.className = 'todo__del';
+    del.className = 'card__del';
     del.textContent = '×';
     del.setAttribute('aria-label', `Delete ${todo.title}`);
     del.addEventListener('click', () => {
       act(async () => {
         await remove(todo.id);
-        await render();
+        await renderAll();
         void flush();
       });
     });
 
-    li.append(check, text, del);
+    li.append(handle, check, text, del);
     return li;
   }
 
-  async function render(): Promise<void> {
-    const todos = await list();
-    $empty.hidden = todos.length > 0;
-    $list.replaceChildren(...todos.map(row));
+  async function renderColumn(col: Col): Promise<void> {
+    const list = $board.querySelector<HTMLUListElement>(`.column__list[data-column="${col.id}"]`);
+    const count = $board.querySelector<HTMLSpanElement>(`.column__count[data-count="${col.id}"]`);
+    if (!list || !count) return;
+    const cards = await listColumn(col.id);
+    list.replaceChildren(...cards.map(cardEl));
+    count.textContent = cards.length > 0 ? String(cards.length) : '';
+  }
+
+  async function renderAll(): Promise<void> {
+    await Promise.all(columns.map((c) => renderColumn(c)));
   }
 
   // Sync never blocks the UI. It reports into the status line and re-renders
@@ -218,29 +315,39 @@ const email: string | null = readSession(Astro.cookies.get(COOKIE)?.value);
   async function flush(): Promise<void> {
     $status.textContent = 'syncing…';
     try {
-      if (await sync()) await render();
+      if (await sync()) await renderAll();
       $status.textContent = navigator.onLine ? '' : 'offline';
     } catch {
       $status.textContent = 'offline — saved locally';
     }
   }
 
-  $form.addEventListener('submit', (event) => {
-    event.preventDefault();
-    const title = $title.value.trim();
-    if (!title) return;
-    $title.value = '';
+  attachDrag($board, (result: DropResult) => {
     act(async () => {
-      await add(title);
-      await render();
+      await move(result.id, { column: result.column, kind: 'kanban', before: result.before, after: result.after });
+      await renderAll();
       void flush();
     });
   });
 
+  for (const form of $board.querySelectorAll<HTMLFormElement>('.add')) {
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const input = form.querySelector<HTMLInputElement>('.add__field');
+      const title = input?.value.trim();
+      const column = form.dataset.column;
+      if (!input || !title || !column) return;
+      input.value = '';
+      act(async () => {
+        await add(title, column);
+        await renderAll();
+        void flush();
+      });
+    });
+  }
+
   // Foreground sync rather than background sync: iOS is unreliable about the
   // latter, and this covers every case you'd actually notice.
-  // visibilitychange fires on document, so bind it there rather than relying on
-  // it bubbling to window.
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') void flush();
   });
@@ -250,6 +357,6 @@ const email: string | null = readSession(Astro.cookies.get(COOKIE)?.value);
     if (document.visibilityState === 'visible') void flush();
   }, 60_000);
 
-  await render();
+  await renderAll();
   void flush();
 </script>
