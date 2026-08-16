@@ -10,9 +10,13 @@ import { DEFAULT_COLUMNS, type ColumnDef } from './columns';
  * See PLAN.md §1.4/§1.5.
  */
 
+/** Only needs `execute` — a `Client` and a `Transaction` both satisfy this,
+ *  so the same read helpers work at top level and inside setColumnsSafe's
+ *  transaction (see its docstring for why that matters). */
+type Executor = { execute: Client['execute'] };
 type Row = Record<string, unknown>;
 
-async function getRaw(c: Client, k: string): Promise<{ v: unknown; ts: number } | null> {
+async function getRaw(c: Executor, k: string): Promise<{ v: unknown; ts: number } | null> {
   const res = await c.execute({ sql: `SELECT v, ts FROM prefs WHERE k = ?`, args: [k] });
   const row = res.rows[0] as unknown as Row | undefined;
   if (!row) return null;
@@ -23,18 +27,24 @@ async function getRaw(c: Client, k: string): Promise<{ v: unknown; ts: number } 
   }
 }
 
-export async function getColumns(): Promise<ColumnDef[]> {
-  const c = await db();
+async function columnsWith(c: Executor): Promise<ColumnDef[]> {
   const row = await getRaw(c, 'columns');
   if (!row || !Array.isArray(row.v) || row.v.length === 0) return DEFAULT_COLUMNS;
   return row.v as ColumnDef[];
 }
 
-export async function getRetiredColumnIds(): Promise<string[]> {
-  const c = await db();
+async function retiredColumnIdsWith(c: Executor): Promise<string[]> {
   const row = await getRaw(c, 'columns.retired');
   if (!row || !Array.isArray(row.v)) return [];
   return row.v as string[];
+}
+
+export async function getColumns(): Promise<ColumnDef[]> {
+  return columnsWith(await db());
+}
+
+export async function getRetiredColumnIds(): Promise<string[]> {
+  return retiredColumnIdsWith(await db());
 }
 
 /** Every non-column pref (e.g. `ui.accent`) goes through here — plain
@@ -62,11 +72,14 @@ export interface ColumnRemovalBlocked {
 
 /**
  * Replace the column list. A column that's being removed or changing `kind`
- * is only allowed through if no non-deleted card still references it — that
- * check and the write happen inside one transaction, so a card can't be
- * created/moved into the target column in the gap between "is it empty" and
- * "remove it" (PLAN.md §1.4). A retired id is reserved permanently: it can
- * never be reused by a later column, even after the removal that retired it.
+ * is only allowed through if no non-deleted card still references it, and a
+ * retired id can never be reused — both checks, and the write, all happen
+ * inside **one transaction**, reading the current `columns`/`columns.retired`
+ * state from the transaction itself rather than from a separate read before
+ * it opens. Reading first and transacting second would leave a real gap: a
+ * concurrent request could retire a column, or add cards to one being
+ * removed, in between — this closes that by never trusting a read that
+ * happened outside the transaction doing the write (PLAN.md §1.4).
  */
 export async function setColumnsSafe(
   next: ColumnDef[],
@@ -77,24 +90,25 @@ export async function setColumnsSafe(
   }
 
   const c = await db();
-  const current = await getColumns();
-  const retired = await getRetiredColumnIds();
-  const nextIds = new Set(next.map((col) => col.id));
-
-  for (const col of next) {
-    const isNewToTheList = !current.some((existing) => existing.id === col.id);
-    if (isNewToTheList && retired.includes(col.id)) {
-      return { ok: false, blocking: [{ column: col.id, count: -1 }] };
-    }
-  }
-
-  const removedOrChangedKind = current.filter((existing) => {
-    const match = next.find((n) => n.id === existing.id);
-    return !match || match.kind !== existing.kind;
-  });
-
   const tx = await c.transaction('write');
   try {
+    const current = await columnsWith(tx);
+    const retired = await retiredColumnIdsWith(tx);
+    const nextIds = new Set(next.map((col) => col.id));
+
+    for (const col of next) {
+      const isNewToTheList = !current.some((existing) => existing.id === col.id);
+      if (isNewToTheList && retired.includes(col.id)) {
+        await tx.rollback();
+        return { ok: false, blocking: [{ column: col.id, count: -1 }] };
+      }
+    }
+
+    const removedOrChangedKind = current.filter((existing) => {
+      const match = next.find((n) => n.id === existing.id);
+      return !match || match.kind !== existing.kind;
+    });
+
     const blocking: { column: string; count: number }[] = [];
     for (const col of removedOrChangedKind) {
       const res = await tx.execute({

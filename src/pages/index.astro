@@ -7,6 +7,18 @@ export const prerender = false;
 
 const email: string | null = readSession(Astro.cookies.get(COOKIE)?.value);
 const columns = await getColumns();
+
+// 1px per minute (60px/hour, 1440px for the full day) — a plain constant,
+// not yet a preference (PLAN.md §3 leaves the axis range/grid hardcoded for
+// v1). The client script reads it back off `data-px-per-minute` so there's
+// one source of truth, not two copies that can drift.
+const PX_PER_MINUTE = 1;
+const HOURS = Array.from({ length: 24 }, (_, h) => h);
+const hourLabel = (h: number): string => {
+  const period = h < 12 ? 'am' : 'pm';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}${period}`;
+};
 ---
 
 <App title="Kanban Time" email={email}>
@@ -17,18 +29,49 @@ const columns = await getColumns();
 
   <div class="board" id="board" data-columns={JSON.stringify(columns)}>
     {
-      columns.map((col) => (
-        <section class="column">
-          <div class="column__head">
-            <h2 class="column__label">{col.label}</h2>
-            <span class="column__count" data-count={col.id} />
-          </div>
-          <ul class="column__list" data-column={col.id} />
-          <form class="add" data-column={col.id} autocomplete="off">
-            <input class="add__field" placeholder="Add card" aria-label={`Add card to ${col.label}`} />
-          </form>
-        </section>
-      ))
+      columns.map((col) =>
+        col.kind === 'timetable' ? (
+          <section class="column column--timetable">
+            <div class="column__head">
+              <h2 class="column__label">{col.label}</h2>
+              <span class="column__count" data-count={col.id} />
+            </div>
+
+            <div class="tray">
+              <button type="button" class="tray__toggle" data-tray-toggle={col.id} aria-expanded="false">
+                Unscheduled (<span data-tray-count={col.id}>0</span>)
+              </button>
+              <ul class="column__list tray__list" data-column={col.id} />
+            </div>
+
+            <div class="axis">
+              <div
+                class="axis__track"
+                data-track={col.id}
+                data-px-per-minute={PX_PER_MINUTE}
+                style={`height:${1440 * PX_PER_MINUTE}px`}
+              >
+                {HOURS.map((h) => (
+                  <div class="axis__hour" style={`top:${h * 60 * PX_PER_MINUTE}px`}>
+                    <span class="axis__label">{hourLabel(h)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+        ) : (
+          <section class="column">
+            <div class="column__head">
+              <h2 class="column__label">{col.label}</h2>
+              <span class="column__count" data-count={col.id} />
+            </div>
+            <ul class="column__list" data-column={col.id} />
+            <form class="add" data-column={col.id} autocomplete="off">
+              <input class="add__field" placeholder="Add card" aria-label={`Add card to ${col.label}`} />
+            </form>
+          </section>
+        ),
+      )
     }
   </div>
 </App>
@@ -121,6 +164,80 @@ const columns = await getColumns();
     border-bottom-color: var(--color-border-strong);
   }
 
+  /* ---- unscheduled tray ---- */
+
+  .tray {
+    margin-top: var(--space-2);
+  }
+
+  .tray__toggle {
+    padding: 0;
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+    background: none;
+    border: 0;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: var(--color-border-strong);
+    text-underline-offset: 0.16em;
+  }
+
+  .tray__toggle:hover {
+    color: var(--color-text);
+  }
+
+  .tray .column__list {
+    max-height: 8rem;
+    margin-top: var(--space-2);
+    overflow-y: auto;
+  }
+
+  .tray__toggle[aria-expanded='true'] + .column__list {
+    max-height: none;
+  }
+
+  /* ---- timetable axis ---- */
+
+  .axis {
+    position: relative;
+    max-height: 26rem;
+    margin-top: var(--space-3);
+    overflow-y: auto;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .axis__track {
+    position: relative;
+  }
+
+  .axis__hour {
+    position: absolute;
+    left: 0;
+    right: 0;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .axis__label {
+    position: absolute;
+    top: -0.55em;
+    left: 0;
+    padding-right: var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+    background: var(--color-bg);
+  }
+
+  /* Built with createElement, like .card/.block — needs :global for the
+     same reason (Astro's scoping attribute never lands on client-created
+     elements). Its absence here silently dropped `position: absolute`,
+     which is what caused the mispositioning bug below. */
+  .board :global(.axis__quickadd) {
+    position: absolute;
+    left: 2.6rem;
+    right: 0;
+    z-index: 5;
+  }
+
   /* Rows are built with createElement, so Astro's scoping attribute never
      lands on them — these have to be :global, kept under .board so nothing
      leaks to the rest of the page. */
@@ -179,12 +296,6 @@ const columns = await getColumns();
     word-break: break-word;
   }
 
-  .board :global(.card__minutes) {
-    flex: none;
-    font-size: var(--text-xs);
-    color: var(--color-text-subtle);
-  }
-
   .board :global(.card__check) {
     flex: none;
     width: 1.05rem;
@@ -221,11 +332,114 @@ const columns = await getColumns();
       opacity: 0.55;
     }
   }
+
+  /* ---- timetable blocks ---- */
+
+  .board :global(.block) {
+    position: absolute;
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-1);
+    overflow: hidden;
+    padding: 2px var(--space-1);
+    font-size: var(--text-xs);
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    touch-action: none;
+  }
+
+  .board :global(.block--dragging),
+  .board :global(.block--resizing) {
+    border-color: var(--color-border-strong);
+    z-index: 10;
+  }
+
+  .board :global(.block.is-done .block__text) {
+    color: var(--color-text-subtle);
+    text-decoration: line-through;
+  }
+
+  .board :global(.block__move) {
+    flex: none;
+    align-self: stretch;
+    width: 0.6rem;
+    cursor: grab;
+  }
+
+  .board :global(.block__check) {
+    flex: none;
+    width: 0.85rem;
+    height: 0.85rem;
+    margin-top: 1px;
+    accent-color: var(--color-text);
+    cursor: pointer;
+  }
+
+  .board :global(.block__text) {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* A narrow lane (several overlapping blocks) hides the secondary bits
+     rather than letting the title get crushed to one visible letter next
+     to a duration label — the title is what matters at a glance. */
+  .board :global(.block--narrow .block__minutes),
+  .board :global(.block--narrow .block__del) {
+    display: none;
+  }
+
+  .board :global(.block__minutes) {
+    flex: none;
+    color: var(--color-text-subtle);
+  }
+
+  .board :global(.block__del) {
+    flex: none;
+    color: var(--color-text-subtle);
+    background: none;
+    border: 0;
+    cursor: pointer;
+    opacity: 0;
+  }
+
+  .board :global(.block:hover .block__del),
+  .board :global(.block__del:focus-visible) {
+    opacity: 1;
+  }
+
+  .board :global(.block__resize) {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 6px;
+    cursor: ns-resize;
+    opacity: 0;
+    border-bottom: 2px solid var(--color-border-strong);
+  }
+
+  .board :global(.block:hover .block__resize),
+  .board :global(.block__resize:focus-visible) {
+    opacity: 1;
+  }
+
+  @media (hover: none) {
+    .board :global(.block__del),
+    .board :global(.block__resize) {
+      opacity: 0.55;
+    }
+  }
 </style>
 
 <script>
   import { listColumn, add, update, remove, move, sync, type Todo } from '../lib/store';
   import { attachDrag, type DropResult } from '../lib/board';
+  import { attachBlockDrag, attachResize, attachTapToCreate, minutesToY, type AxisConfig } from '../lib/timetable';
+  import { assignLanes } from '../lib/lanes';
 
   interface Col {
     id: string;
@@ -233,9 +447,18 @@ const columns = await getColumns();
     kind: 'kanban' | 'timetable';
   }
 
+  // Default 5-minute snap for drag/resize, not yet a preference — the same
+  // v1-hardcoded allowance PLAN.md §3 gives the axis range. Precision is
+  // never drag-only either way: `minutes`/`start` still accept any value
+  // through a direct edit, this just governs what a drag rounds to.
+  const GRID_MINUTES = 5;
+  const MIN_BLOCK_MINUTES = 5;
+  const VIEWPORT_START_HOUR = 6;
+
   const $board = document.getElementById('board') as HTMLDivElement;
   const $status = document.getElementById('status') as HTMLSpanElement;
   const columns = JSON.parse($board.dataset.columns || '[]') as Col[];
+  const kindOf = (id: string): Col['kind'] => columns.find((c) => c.id === id)?.kind ?? 'kanban';
 
   /**
    * Runs an async UI action and surfaces failures.
@@ -297,6 +520,75 @@ const columns = await getColumns();
     return li;
   }
 
+  function blockEl(todo: Todo, config: AxisConfig, lane: number, lanes: number): HTMLLIElement {
+    const el = document.createElement('li');
+    el.className = 'block';
+    el.dataset.id = todo.id;
+    el.dataset.minutes = String(todo.minutes);
+    if (todo.done) el.classList.add('is-done');
+    // 3+ lanes leaves too little width for a checkbox, title, duration, and
+    // delete button to all read cleanly — drop the secondary ones so the
+    // title (the thing that matters at a glance) isn't the part that loses.
+    if (lanes > 2) el.classList.add('block--narrow');
+
+    const top = minutesToY(todo.placement.start ?? 0, config);
+    const height = Math.max(24, todo.minutes * config.pxPerMinute);
+    el.style.top = `${top}px`;
+    el.style.height = `${height}px`;
+    const widthPct = 100 / lanes;
+    el.style.width = `calc(${widthPct}% - 4px)`;
+    el.style.left = `calc(${widthPct * lane}% + 2px)`;
+
+    const move = document.createElement('span');
+    move.className = 'block__move';
+    move.setAttribute('aria-hidden', 'true');
+
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.className = 'block__check';
+    check.checked = Boolean(todo.done);
+    check.setAttribute('aria-label', todo.title);
+    // Without this, a pointerdown on the checkbox bubbles into the block's
+    // own drag-start listener and a tap turns into an accidental drag.
+    check.addEventListener('pointerdown', (e) => e.stopPropagation());
+    check.addEventListener('change', () => {
+      act(async () => {
+        await update(todo.id, { done: check.checked ? 1 : 0 });
+        await renderAll();
+        void flush();
+      });
+    });
+
+    const text = document.createElement('span');
+    text.className = 'block__text';
+    text.textContent = todo.title;
+
+    const minutes = document.createElement('span');
+    minutes.className = 'block__minutes';
+    minutes.textContent = `${todo.minutes}m`;
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'block__del';
+    del.textContent = '×';
+    del.setAttribute('aria-label', `Delete ${todo.title}`);
+    del.addEventListener('pointerdown', (e) => e.stopPropagation());
+    del.addEventListener('click', () => {
+      act(async () => {
+        await remove(todo.id);
+        await renderAll();
+        void flush();
+      });
+    });
+
+    const resize = document.createElement('span');
+    resize.className = 'block__resize';
+    resize.setAttribute('aria-hidden', 'true');
+
+    el.append(move, check, text, minutes, del, resize);
+    return el;
+  }
+
   async function renderColumn(col: Col): Promise<void> {
     const list = $board.querySelector<HTMLUListElement>(`.column__list[data-column="${col.id}"]`);
     const count = $board.querySelector<HTMLSpanElement>(`.column__count[data-count="${col.id}"]`);
@@ -306,8 +598,40 @@ const columns = await getColumns();
     count.textContent = cards.length > 0 ? String(cards.length) : '';
   }
 
+  async function renderTimetable(col: Col): Promise<void> {
+    const cards = await listColumn(col.id);
+    const tray = cards
+      .filter((t) => t.placement.start === null)
+      .sort((a, b) => (a.placement.rank < b.placement.rank ? -1 : a.placement.rank > b.placement.rank ? 1 : 0));
+    const placed = cards.filter((t) => t.placement.start !== null);
+
+    const trayList = $board.querySelector<HTMLUListElement>(`.tray .column__list[data-column="${col.id}"]`);
+    const trayCount = $board.querySelector<HTMLSpanElement>(`[data-tray-count="${col.id}"]`);
+    if (trayList) trayList.replaceChildren(...tray.map(cardEl));
+    if (trayCount) trayCount.textContent = String(tray.length);
+
+    const track = $board.querySelector<HTMLDivElement>(`.axis__track[data-track="${col.id}"]`);
+    const count = $board.querySelector<HTMLSpanElement>(`.column__count[data-count="${col.id}"]`);
+    if (count) count.textContent = cards.length > 0 ? String(cards.length) : '';
+    if (!track) return;
+
+    const config = axisConfig(track);
+    track.querySelectorAll('.block').forEach((b) => b.remove());
+
+    const lanes = assignLanes(placed.map((t) => ({ id: t.id, start: t.placement.start!, minutes: t.minutes })));
+    const laneOf = new Map(lanes.map((l) => [l.id, l]));
+    for (const todo of placed) {
+      const l = laneOf.get(todo.id) ?? { lane: 0, lanes: 1 };
+      track.appendChild(blockEl(todo, config, l.lane, l.lanes));
+    }
+  }
+
+  function axisConfig(track: HTMLElement): AxisConfig {
+    return { startMinute: 0, pxPerMinute: Number(track.dataset.pxPerMinute || '1') };
+  }
+
   async function renderAll(): Promise<void> {
-    await Promise.all(columns.map((c) => renderColumn(c)));
+    await Promise.all(columns.map((c) => (c.kind === 'timetable' ? renderTimetable(c) : renderColumn(c))));
   }
 
   // Sync never blocks the UI. It reports into the status line and re-renders
@@ -322,9 +646,12 @@ const columns = await getColumns();
     }
   }
 
+  // One drag mechanism handles both real kanban columns and a timetable
+  // column's tray (the tray is a `.column__list` too) — the destination's
+  // *own* kind decides the transition, per PLAN.md §1.3, not the source's.
   attachDrag($board, (result: DropResult) => {
     act(async () => {
-      await move(result.id, { column: result.column, kind: 'kanban', before: result.before, after: result.after });
+      await move(result.id, { column: result.column, kind: kindOf(result.column), before: result.before, after: result.after });
       await renderAll();
       void flush();
     });
@@ -346,6 +673,75 @@ const columns = await getColumns();
     });
   }
 
+  for (const btn of $board.querySelectorAll<HTMLButtonElement>('.tray__toggle')) {
+    btn.addEventListener('click', () => {
+      const expanded = btn.getAttribute('aria-expanded') === 'true';
+      btn.setAttribute('aria-expanded', String(!expanded));
+    });
+  }
+
+  function showInlineAdd(track: HTMLElement, config: AxisConfig, start: number, column: string): void {
+    track.querySelector('.axis__quickadd')?.remove();
+
+    const wrap = document.createElement('div');
+    wrap.className = 'axis__quickadd';
+    wrap.style.top = `${minutesToY(start, config)}px`;
+
+    const input = document.createElement('input');
+    input.className = 'add__field';
+    input.placeholder = 'Add card';
+    input.setAttribute('aria-label', 'Add card at this time');
+    wrap.appendChild(input);
+    track.appendChild(wrap);
+    input.focus();
+
+    const cleanup = () => wrap.remove();
+    input.addEventListener('blur', () => {
+      if (!input.value.trim()) cleanup();
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        cleanup();
+        return;
+      }
+      if (e.key !== 'Enter') return;
+      const title = input.value.trim();
+      if (!title) return;
+      cleanup();
+      act(async () => {
+        await add(title, column, start);
+        await renderAll();
+        void flush();
+      });
+    });
+  }
+
+  for (const col of columns.filter((c): c is Col => c.kind === 'timetable')) {
+    const track = $board.querySelector<HTMLDivElement>(`.axis__track[data-track="${col.id}"]`);
+    if (!track) continue;
+    const config = axisConfig(track);
+
+    attachBlockDrag(track, config, GRID_MINUTES, (id, start) => {
+      act(async () => {
+        await move(id, { column: col.id, kind: 'timetable', start });
+        await renderAll();
+        void flush();
+      });
+    });
+
+    attachResize(track, config, GRID_MINUTES, MIN_BLOCK_MINUTES, (id, minutes) => {
+      act(async () => {
+        await update(id, { minutes });
+        await renderAll();
+        void flush();
+      });
+    });
+
+    attachTapToCreate(track, config, GRID_MINUTES, (start) => {
+      showInlineAdd(track, config, start, col.id);
+    });
+  }
+
   // Foreground sync rather than background sync: iOS is unreliable about the
   // latter, and this covers every case you'd actually notice.
   document.addEventListener('visibilitychange', () => {
@@ -359,4 +755,16 @@ const columns = await getColumns();
 
   await renderAll();
   void flush();
+
+  // Scroll each timetable axis to its default viewport (06:00) — after
+  // renderAll(), and one more frame beyond that, so the track's final
+  // scrollHeight (with blocks in it) has actually settled first. Setting
+  // scrollTop before layout stabilizes doesn't reliably stick.
+  requestAnimationFrame(() => {
+    for (const col of columns.filter((c): c is Col => c.kind === 'timetable')) {
+      const track = $board.querySelector<HTMLDivElement>(`.axis__track[data-track="${col.id}"]`);
+      const scrollHost = track?.closest('.axis') as HTMLElement | null;
+      if (scrollHost) scrollHost.scrollTop = VIEWPORT_START_HOUR * 60 * axisConfig(track!).pxPerMinute;
+    }
+  });
 </script>

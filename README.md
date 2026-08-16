@@ -178,13 +178,29 @@ Full design, written across three rounds of independent review (data-model
 correctness, daily-use interaction design, visual consistency with the rest
 of the site), lives in `PLAN.md`.
 
+## The timetable
+
+The `today` column (or any column with `kind: 'timetable'`) renders as a
+vertical day axis instead of a card stack — `src/lib/timetable.ts` for the
+pointer-driven interactions (drag a block to retime, drag its bottom edge to
+resize, tap empty track space to create a card right there), `src/lib/lanes.ts`
+for laying out overlapping blocks side by side without assuming overlap is
+transitive (verified by `scripts/test-lanes.mjs` against the exact transitive
+A–B–C–D chain the design review checked by hand). Unplaced cards
+(`placement.start === null`) sit in a collapsible "Unscheduled" tray above the
+axis, ordered by the same `rank` a kanban column uses.
+
+One thing worth knowing if you're touching this code: `.axis__quickadd`,
+`.block`, and friends are built with `createElement` in the client script, so
+Astro's per-page style-scoping attribute never lands on them — every one of
+those rules has to be wrapped in `:global(...)` under `.board`, or the CSS
+silently never applies. It did once, during this feature's own build (a
+missing `:global` on the quick-add box meant `position: absolute` never took
+effect, which surfaced as a confusing "the axis scrolls to the wrong place on
+focus" bug before the actual cause — a plain unpositioned `<div>` — was found).
+
 ## Still to build
 
-- **Timetable** — the `today` column currently renders as a plain stack, same
-  as the kanban columns (Phase 2 of `PLAN.md`'s rollout order). Phase 3 gives
-  it its own axis: a vertical day view reading `placement.start`, drag to
-  retime, resize to change `minutes`, an unscheduled tray for cards not yet
-  placed on the clock.
 - **Agent** — natural language over the board, and over the board's own
   presentation (`prefs`, columns). Routes through the same `cards.ts`
   transition layer the UI uses, not a parallel path. Needs a new OpenRouter

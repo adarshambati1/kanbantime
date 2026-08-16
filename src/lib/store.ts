@@ -84,7 +84,19 @@ export async function listColumn(column: string): Promise<Todo[]> {
 
 const stamp = (t: Todo) => Math.max(0, ...Object.values(t.ts ?? {}));
 
-export async function add(title: string, column = 'backlog'): Promise<Todo> {
+/**
+ * `start`/`minutes` let a timetable column create a card directly on the
+ * axis (tap-a-slot-to-create, PLAN.md §2.2's primary phone-friendly route)
+ * instead of always landing unscheduled in the tray. `rank` is still
+ * computed either way — harmless for a placed card, and needed if it's
+ * later moved to a kanban column or the tray.
+ */
+export async function add(
+  title: string,
+  column = 'backlog',
+  start: number | null = null,
+  minutes = 30,
+): Promise<Todo> {
   const now = Date.now();
   // Append: rank after whatever is currently last in that column.
   const existing = await listColumn(column);
@@ -97,13 +109,27 @@ export async function add(title: string, column = 'backlog'): Promise<Todo> {
     done: 0,
     due: null,
     deleted: 0,
-    placement: { column, rank: rankBetween(last, null), start: null },
-    minutes: 30,
+    placement: { column, rank: rankBetween(last, null), start },
+    minutes,
     ts: Object.fromEntries(FIELDS.map((f) => [f, now])) as Todo['ts'],
     dirty: 1,
   };
   await put(t);
   return t;
+}
+
+/** Writes any field, including `placement` — not exported. `move()` below
+ *  is the only caller allowed to touch `placement`; the public `update()`
+ *  is typed to exclude it, which is what actually stops a generic patch
+ *  call from bypassing `buildPlacement()`'s transition rules and reopening
+ *  the bug placement-as-one-field exists to close (PLAN.md §2/§4.1). */
+async function patch(id: string, fields: Partial<Pick<Todo, Field>>): Promise<void> {
+  const existing = await getOne(id);
+  if (!existing) return;
+  const now = Date.now();
+  const ts = { ...existing.ts };
+  for (const k of Object.keys(fields) as Field[]) ts[k] = now;
+  await put({ ...existing, ...fields, ts, dirty: 1 });
 }
 
 /**
@@ -116,17 +142,16 @@ export async function move(id: string, input: MoveInput): Promise<void> {
   const existing = await getOne(id);
   if (!existing) return;
   const placement = buildPlacement(existing.placement, input);
-  await update(id, { placement });
+  await patch(id, { placement });
 }
 
-/** Patch a record. Only the fields you pass get new timestamps. */
-export async function update(id: string, patch: Partial<Pick<Todo, Field>>): Promise<void> {
-  const existing = await getOne(id);
-  if (!existing) return;
-  const now = Date.now();
-  const ts = { ...existing.ts };
-  for (const k of Object.keys(patch) as Field[]) ts[k] = now;
-  await put({ ...existing, ...patch, ts, dirty: 1 });
+/** Patch a record — every field except `placement`. Only the fields you
+ *  pass get new timestamps. */
+export async function update(
+  id: string,
+  fields: Partial<Pick<Todo, Exclude<Field, 'placement'>>>,
+): Promise<void> {
+  await patch(id, fields);
 }
 
 /** Soft delete — tombstones are what let other devices learn about the removal. */

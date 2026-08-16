@@ -141,10 +141,15 @@ curl -s -o /dev/null "${A[@]}" -X POST $B/api/sync "${JSON[@]}" -d "{\"cursor\":
 # Device B: independently retimes it, unaware of A's move (newer write).
 curl -s -o /dev/null "${A[@]}" -X POST $B/api/sync "${JSON[@]}" -d "{\"cursor\":0,\"changes\":[
   {\"id\":\"$RT\",\"title\":\"race card\",\"notes\":\"\",\"done\":0,\"due\":null,\"deleted\":0,\"placement\":$(plc today q 500),\"minutes\":30,\"ts\":{\"title\":$NOW,\"done\":$NOW,\"notes\":$NOW,\"due\":$NOW,\"deleted\":$NOW,\"placement\":$TB,\"minutes\":$NOW}}]}"
+# Check all three sub-fields, not just column/start — a buggy implementation
+# that still recombined `rank` independently (e.g. landing on A's "z" while
+# correctly taking B's column/start) would pass a check that only looked at
+# two of the three fields. B's whole placement is {today, q, 500}; A's was
+# {backlog, z, null} — nothing here should come from A.
 chk "B's placement wins whole, not recombined" "$(curl -s "${A[@]}" -X POST $B/api/sync "${JSON[@]}" -d '{"cursor":0,"changes":[]}' | python3 -c "
 import json,sys
 p=[c['placement'] for c in json.load(sys.stdin)['changes'] if c['id']=='$RT'][0]
-print(p['column'], p['start'])")" "today 500"
+print(p['column'], p['rank'], p['start'])")" "today q 500"
 
 echo "== prefs (columns) =="
 NO_TODAY='{"columns":[{"id":"backlog","label":"Backlog","kind":"kanban"},{"id":"doing","label":"Doing","kind":"kanban"},{"id":"done","label":"Done","kind":"kanban"}]'
