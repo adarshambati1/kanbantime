@@ -1,0 +1,546 @@
+---
+import App from '../../layouts/App.astro';
+import { COOKIE, readSession } from '../../lib/auth';
+
+export const prerender = false;
+
+const email: string | null = readSession(Astro.cookies.get(COOKIE)?.value);
+---
+
+<App title="Notes — Kanban Time" email={email}>
+  <div class="head">
+    <h1>Notes</h1>
+    <span id="status" class="status" aria-live="polite"></span>
+  </div>
+
+  <div class="toolbar">
+    <input id="search" class="search__field" type="search" placeholder="Search notes…" aria-label="Search notes" />
+    <nav id="folders" class="folders" aria-label="Folders"></nav>
+  </div>
+
+  <form id="add" class="add" autocomplete="off">
+    <input id="title-input" class="add__field" placeholder="New note title…" aria-label="New note title" />
+  </form>
+
+  <div class="layout">
+    <ul id="list" class="list"></ul>
+
+    <div id="editor" class="editor" hidden>
+      <div id="edit-lock" class="editor__lock" hidden>
+        Public — <button type="button" id="edit-unpublish" class="editor__unpublish">unpublish to edit</button>
+      </div>
+      <input id="edit-title" class="editor__title" aria-label="Title" />
+      <input id="edit-folder" class="editor__folder" aria-label="Folder" list="folder-options" />
+      <datalist id="folder-options"></datalist>
+      <textarea id="edit-body" class="editor__body" rows={14} aria-label="Body"></textarea>
+      <div class="editor__row">
+        <button type="button" id="edit-forget" class="editor__forget">Forget</button>
+        <span id="edit-msg" class="editor__msg"></span>
+      </div>
+    </div>
+  </div>
+</App>
+
+<style>
+  .head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+
+  .status {
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-4);
+    margin-top: var(--space-6);
+  }
+
+  .search__field {
+    flex: 1;
+    min-width: 12rem;
+    padding: var(--space-2) var(--space-1);
+    font-size: var(--text-sm);
+    color: inherit;
+    background: none;
+    border: 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .search__field::placeholder {
+    color: var(--color-text-subtle);
+  }
+
+  .search__field:focus-visible {
+    outline: none;
+    border-bottom-color: var(--color-border-strong);
+  }
+
+  .folders {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    font-size: var(--text-xs);
+  }
+
+  .folders :global(button) {
+    padding: 0;
+    color: var(--color-text-subtle);
+    background: none;
+    border: 0;
+    cursor: pointer;
+  }
+
+  .folders :global(button:hover) {
+    color: var(--color-text);
+  }
+
+  .folders :global(button.is-current) {
+    color: var(--color-text);
+    text-decoration: underline;
+    text-decoration-color: var(--color-border-strong);
+    text-underline-offset: 0.16em;
+  }
+
+  .add {
+    margin-top: var(--space-4);
+  }
+
+  .add__field {
+    width: 100%;
+    padding: var(--space-2) var(--space-1);
+    font-size: var(--text-sm);
+    color: inherit;
+    background: none;
+    border: 0;
+    border-bottom: 1px solid transparent;
+  }
+
+  .add__field::placeholder {
+    color: var(--color-text-subtle);
+  }
+
+  .add__field:focus-visible {
+    outline: none;
+    border-bottom-color: var(--color-border-strong);
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--space-6);
+    margin-top: var(--space-5);
+  }
+
+  @media (min-width: 48rem) {
+    .layout {
+      grid-template-columns: 18rem 1fr;
+      align-items: start;
+    }
+  }
+
+  .list {
+    list-style: none;
+    padding: 0;
+  }
+
+  .list :global(.note) {
+    position: relative;
+    padding: var(--space-3) 0;
+    border-bottom: 1px solid var(--color-border);
+    cursor: pointer;
+  }
+
+  .list :global(.note.is-selected) {
+    border-bottom-color: var(--color-border-strong);
+  }
+
+  .list :global(.note__title) {
+    font-size: var(--text-sm);
+    word-break: break-word;
+  }
+
+  .list :global(.note__meta) {
+    margin-top: 2px;
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+  }
+
+  .editor {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .editor__title {
+    padding: var(--space-2) var(--space-1);
+    font-size: var(--text-base);
+    font-weight: var(--weight-medium);
+    color: inherit;
+    background: none;
+    border: 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .editor__title:focus-visible,
+  .editor__folder:focus-visible,
+  .editor__body:focus-visible {
+    outline: none;
+    border-bottom-color: var(--color-border-strong);
+  }
+
+  .editor__folder {
+    width: 12rem;
+    padding: var(--space-1);
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+    background: none;
+    border: 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .editor__lock {
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+  }
+
+  .editor__unpublish {
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: 0;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: var(--color-border-strong);
+  }
+
+  .editor__unpublish:hover {
+    color: var(--color-text);
+  }
+
+  .editor__body {
+    width: 100%;
+    padding: var(--space-2) var(--space-1);
+    font-size: var(--text-sm);
+    line-height: var(--leading-normal, 1.5);
+    color: inherit;
+    background: none;
+    border: 0;
+    border-bottom: 1px solid var(--color-border);
+    resize: vertical;
+    font-family: inherit;
+  }
+
+  .editor__row {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-3);
+  }
+
+  .editor__forget {
+    padding: 0;
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+    background: none;
+    border: 0;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: var(--color-border-strong);
+  }
+
+  .editor__forget:hover {
+    color: var(--color-danger);
+  }
+
+  .editor__msg {
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+  }
+</style>
+
+<script>
+  import * as notes from '../../lib/notesStore';
+  import type { Note } from '../../lib/notesStore';
+
+  const $status = document.getElementById('status') as HTMLSpanElement;
+  const $search = document.getElementById('search') as HTMLInputElement;
+  const $folders = document.getElementById('folders') as HTMLElement;
+  const $addForm = document.getElementById('add') as HTMLFormElement;
+  const $titleInput = document.getElementById('title-input') as HTMLInputElement;
+  const $list = document.getElementById('list') as HTMLUListElement;
+  const $editor = document.getElementById('editor') as HTMLDivElement;
+  const $editTitle = document.getElementById('edit-title') as HTMLInputElement;
+  const $editFolder = document.getElementById('edit-folder') as HTMLInputElement;
+  const $folderOptions = document.getElementById('folder-options') as HTMLDataListElement;
+  const $editBody = document.getElementById('edit-body') as HTMLTextAreaElement;
+  const $editForget = document.getElementById('edit-forget') as HTMLButtonElement;
+  const $editMsg = document.getElementById('edit-msg') as HTMLSpanElement;
+  const $editLock = document.getElementById('edit-lock') as HTMLDivElement;
+  const $editUnpublish = document.getElementById('edit-unpublish') as HTMLButtonElement;
+
+  let currentFolder: string | null = null;
+  let selectedId: string | null = null;
+  let searchResults: Note[] | null = null;
+  let searchTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function act(fn: () => Promise<void>): void {
+    void fn().catch((error: unknown) => {
+      console.error(error);
+      $status.textContent = "couldn't save";
+    });
+  }
+
+  const fmtDate = (ms: number): string =>
+    new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+
+  /**
+   * Switching folders always shows that folder's full list — full stop,
+   * not contingent on whatever search state happened to still be settling.
+   * A folder click and an in-flight debounced search are two independent
+   * timers with no inherent ordering between them; rather than rely on
+   * whichever happens to resolve last, a folder switch unconditionally
+   * cancels the pending search and clears any stale results so there's
+   * nothing left to race against.
+   */
+  function selectFolder(name: string | null): void {
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = null;
+    searchResults = null;
+    $search.value = '';
+    currentFolder = name;
+    void renderFolders();
+    void renderList();
+  }
+
+  async function renderFolders(): Promise<void> {
+    const names = await notes.folders();
+    $folders.replaceChildren();
+
+    const all = document.createElement('button');
+    all.type = 'button';
+    all.textContent = 'All';
+    if (currentFolder === null) all.classList.add('is-current');
+    all.addEventListener('click', () => selectFolder(null));
+    $folders.appendChild(all);
+
+    for (const name of names) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = name;
+      if (currentFolder === name) btn.classList.add('is-current');
+      btn.addEventListener('click', () => selectFolder(name));
+      $folders.appendChild(btn);
+    }
+
+    $folderOptions.replaceChildren(
+      ...names.map((name) => {
+        const opt = document.createElement('option');
+        opt.value = name;
+        return opt;
+      }),
+    );
+  }
+
+  function noteRow(note: Note): HTMLLIElement {
+    const li = document.createElement('li');
+    li.className = 'note';
+    if (note.id === selectedId) li.classList.add('is-selected');
+
+    const title = document.createElement('div');
+    title.className = 'note__title';
+    title.textContent = note.title || '(untitled)';
+
+    const meta = document.createElement('div');
+    meta.className = 'note__meta';
+    meta.textContent = `${note.folder} · ${fmtDate(note.createdAt)}`;
+
+    li.append(title, meta);
+    li.addEventListener('click', () => select(note.id));
+    return li;
+  }
+
+  async function renderList(): Promise<void> {
+    const items = searchResults ?? (await notes.list(currentFolder ?? undefined));
+    $list.replaceChildren(...items.map(noteRow));
+  }
+
+  function setLocked(locked: boolean): void {
+    $editLock.hidden = !locked;
+    $editTitle.readOnly = locked;
+    $editFolder.readOnly = locked;
+    $editBody.readOnly = locked;
+  }
+
+  async function select(id: string): Promise<void> {
+    selectedId = id;
+    await renderList();
+
+    // A search result can reference a note this device hasn't synced down
+    // yet — fall back to the (already-fetched, complete) search result
+    // rather than silently showing nothing.
+    let note = (await notes.list()).find((n) => n.id === id);
+    if (!note) {
+      const fromSearch = searchResults?.find((n) => n.id === id);
+      if (fromSearch) {
+        await notes.adopt(fromSearch);
+        note = fromSearch;
+      }
+    }
+    if (!note) {
+      $editor.hidden = true;
+      $status.textContent = "that note hasn't synced to this device yet";
+      return;
+    }
+
+    $editor.hidden = false;
+    $editTitle.value = note.title;
+    $editFolder.value = note.folder;
+    $editBody.value = note.body;
+    $editMsg.textContent = '';
+    setLocked(note.visibility === 'public');
+  }
+
+  function saveEdit(): void {
+    if (!selectedId) return;
+    const id = selectedId;
+    act(async () => {
+      const result = await notes.update(id, {
+        title: $editTitle.value,
+        folder: $editFolder.value.trim() || 'general',
+        body: $editBody.value,
+      });
+      if (!result.ok) {
+        if (result.reason === 'locked') {
+          $editMsg.textContent = '';
+          setLocked(true);
+        } else {
+          $editMsg.textContent = "couldn't save";
+        }
+        return;
+      }
+      $editMsg.textContent = 'saved';
+      await renderFolders();
+      await renderList();
+      void flush();
+    });
+  }
+
+  $editTitle.addEventListener('blur', saveEdit);
+  $editFolder.addEventListener('blur', saveEdit);
+  $editBody.addEventListener('blur', saveEdit);
+
+  // Blur-only save leaves a real gap: closing the tab or navigating away
+  // mid-sentence never fires a blur, and the edit is lost from IndexedDB
+  // entirely, not just unsynced. A short debounce on every keystroke closes
+  // that window without turning every character into its own IndexedDB
+  // write — by the time anyone actually navigates away, the local copy is
+  // almost always already current.
+  let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleAutosave(): void {
+    if (autosaveTimer) clearTimeout(autosaveTimer);
+    autosaveTimer = setTimeout(saveEdit, 1500);
+  }
+  $editTitle.addEventListener('input', scheduleAutosave);
+  $editFolder.addEventListener('input', scheduleAutosave);
+  $editBody.addEventListener('input', scheduleAutosave);
+
+  $editUnpublish.addEventListener('click', () => {
+    if (!selectedId) return;
+    const id = selectedId;
+    act(async () => {
+      const result = await notes.update(id, { visibility: 'private' });
+      if (!result.ok) {
+        $editMsg.textContent = "couldn't unpublish";
+        return;
+      }
+      setLocked(false);
+      $editMsg.textContent = '';
+      void flush();
+    });
+  });
+
+  $editForget.addEventListener('click', () => {
+    if (!selectedId) return;
+    const id = selectedId;
+    act(async () => {
+      await notes.forget(id);
+      selectedId = null;
+      $editor.hidden = true;
+      await renderFolders();
+      await renderList();
+      void flush();
+    });
+  });
+
+  $addForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const title = $titleInput.value.trim();
+    if (!title) return;
+    $titleInput.value = '';
+    act(async () => {
+      const note = await notes.create(title, '', currentFolder ?? 'general');
+      await renderFolders();
+      await renderList();
+      void flush();
+      await select(note.id);
+      $editBody.focus();
+    });
+  });
+
+  $search.addEventListener('input', () => {
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => void runSearch(), 300);
+  });
+
+  async function runSearch(): Promise<void> {
+    const q = $search.value.trim();
+    if (!q) {
+      searchResults = null;
+      await renderList();
+      return;
+    }
+    try {
+      const params = new URLSearchParams({ q });
+      if (currentFolder) params.set('folder', currentFolder);
+      const res = await fetch(`/api/notes/search?${params}`);
+      const body = (await res.json()) as { notes: Note[] };
+      searchResults = body.notes;
+      await renderList();
+    } catch {
+      $status.textContent = 'search failed';
+    }
+  }
+
+  async function flush(): Promise<void> {
+    $status.textContent = 'syncing…';
+    try {
+      if (await notes.sync()) {
+        await renderFolders();
+        await renderList();
+      }
+      $status.textContent = navigator.onLine ? '' : 'offline';
+    } catch {
+      $status.textContent = 'offline — saved locally';
+    }
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') void flush();
+  });
+  addEventListener('online', () => void flush());
+  addEventListener('pageshow', () => void flush());
+  setInterval(() => {
+    if (document.visibilityState === 'visible') void flush();
+  }, 60_000);
+
+  await renderFolders();
+  await renderList();
+  void flush();
+</script>

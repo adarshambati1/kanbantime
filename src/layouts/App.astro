@@ -8,6 +8,7 @@ interface Props {
 }
 
 const { title, email = null } = Astro.props;
+const path = Astro.url.pathname;
 ---
 
 <!doctype html>
@@ -28,6 +29,18 @@ const { title, email = null } = Astro.props;
   <body>
     <header class="bar">
       <a class="bar__brand" href="/">Kanban Time</a>
+      {
+        email && (
+          <nav class="bar__nav" aria-label="Primary">
+            <a class:list={['bar__link', { 'bar__link--current': path === '/' }]} href="/">
+              Board
+            </a>
+            <a class:list={['bar__link', { 'bar__link--current': path.startsWith('/notes') }]} href="/notes">
+              Notes
+            </a>
+          </nav>
+        )
+      }
       <a class="bar__site" href="https://adarshambati.com">adarshambati.com</a>
     </header>
 
@@ -78,6 +91,24 @@ const { title, email = null } = Astro.props;
     font-weight: var(--weight-semibold);
     letter-spacing: var(--tracking-tight);
     text-decoration: none;
+  }
+
+  .bar__nav {
+    display: flex;
+    flex: 1;
+    gap: var(--space-4);
+    margin-left: var(--space-5);
+  }
+
+  .bar__link {
+    font-size: var(--text-sm);
+    color: var(--color-text-subtle);
+    text-decoration: none;
+  }
+
+  .bar__link:hover,
+  .bar__link--current {
+    color: var(--color-text);
   }
 
   .bar__site {

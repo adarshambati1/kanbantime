@@ -27,6 +27,8 @@ chk "login is noindex"      "$(curl -s $B/login | grep -c noindex)" 1
 chk "POST /api/sync  401"   "$(curl -s -o /dev/null -w %{http_code} -X POST $B/api/sync "${JSON[@]}" -d '{"cursor":0,"changes":[]}')" 401
 chk "GET /api/list   401"   "$(curl -s -o /dev/null -w %{http_code} $B/api/list)" 401
 chk "GET /api/prefs  401"   "$(curl -s -o /dev/null -w %{http_code} $B/api/prefs)" 401
+chk "POST /api/notes/sync 401" "$(curl -s -o /dev/null -w %{http_code} -X POST $B/api/notes/sync "${JSON[@]}" -d '{"cursor":0,"changes":[]}')" 401
+chk "GET /api/notes/search 401" "$(curl -s -o /dev/null -w %{http_code} "$B/api/notes/search?q=x")" 401
 
 echo "== oauth handshake =="
 OUT=$(curl -s -o /dev/null -D - "$B/api/auth/login?next=/")
@@ -166,6 +168,82 @@ curl -s -o /dev/null "${A[@]}" -X POST $B/api/sync "${JSON[@]}" -d "{\"cursor\":
   {\"id\":\"$RT\",\"title\":\"race card\",\"notes\":\"\",\"done\":0,\"due\":null,\"deleted\":0,\"placement\":$(plc doing z null),\"minutes\":30,\"ts\":{\"title\":$CLEARED,\"done\":$CLEARED,\"notes\":$CLEARED,\"due\":$CLEARED,\"deleted\":$CLEARED,\"placement\":$CLEARED,\"minutes\":$CLEARED}}]}"
 chk "removal ok once column is empty" "$(curl -s -o /dev/null -w %{http_code} "${A[@]}" "${JSON[@]}" -X POST $B/api/prefs -d "$NO_TODAY,\"ts\":$((CLEARED+1))}")" 200
 chk "retired id rejected on reuse" "$(curl -s -o /dev/null -w %{http_code} "${A[@]}" "${JSON[@]}" -X POST $B/api/prefs -d '{"columns":[{"id":"backlog","label":"Backlog","kind":"kanban"},{"id":"doing","label":"Doing","kind":"kanban"},{"id":"done","label":"Done","kind":"kanban"},{"id":"today","label":"Today Again","kind":"timetable"}],"ts":'"$((CLEARED+2))"'}')" 409
+
+echo "== notes: sync, merge, tombstone =="
+N1=$(uuidgen); N2=$(uuidgen)
+NNOW=$(($(date +%s)*1000))
+nts() { echo "{\"title\":$1,\"body\":$1,\"folder\":$1,\"visibility\":$1,\"deleted\":$2}"; }
+NR=$(curl -s "${A[@]}" -X POST $B/api/notes/sync "${JSON[@]}" -d "{\"cursor\":0,\"changes\":[
+  {\"id\":\"$N1\",\"title\":\"first note\",\"body\":\"hello world\",\"folder\":\"robotics\",\"visibility\":\"private\",\"deleted\":0,\"createdAt\":$NNOW,\"ts\":$(nts $NNOW $NNOW)},
+  {\"id\":\"$N2\",\"title\":\"second note\",\"body\":\"unrelated text\",\"folder\":\"general\",\"visibility\":\"private\",\"deleted\":0,\"createdAt\":$NNOW,\"ts\":$(nts $NNOW $NNOW)}]}")
+chk "both notes echoed" "$(echo "$NR" | python3 -c "
+import json,sys
+ids={c['id'] for c in json.load(sys.stdin)['changes']}
+print('$N1' in ids and '$N2' in ids)")" True
+chk "folder round-trips" "$(echo "$NR" | python3 -c "
+import json,sys
+print([c['folder'] for c in json.load(sys.stdin)['changes'] if c['id']=='$N1'][0])")" robotics
+
+# Field-level merge: device A edits body at T+2000, device B edits title at
+# T+1000 — neither write may clobber the other.
+NLATER=$((NNOW+2000)); NMID=$((NNOW+1000))
+curl -s -o /dev/null "${A[@]}" -X POST $B/api/notes/sync "${JSON[@]}" -d "{\"cursor\":0,\"changes\":[
+  {\"id\":\"$N1\",\"title\":\"first note\",\"body\":\"hello universe\",\"folder\":\"robotics\",\"visibility\":\"private\",\"deleted\":0,\"createdAt\":$NNOW,\"ts\":{\"title\":$NNOW,\"body\":$NLATER,\"folder\":$NNOW,\"visibility\":$NNOW,\"deleted\":$NNOW}}]}"
+NR2=$(curl -s "${A[@]}" -X POST $B/api/notes/sync "${JSON[@]}" -d "{\"cursor\":0,\"changes\":[
+  {\"id\":\"$N1\",\"title\":\"first note, renamed\",\"body\":\"hello world\",\"folder\":\"robotics\",\"visibility\":\"private\",\"deleted\":0,\"createdAt\":$NNOW,\"ts\":{\"title\":$NMID,\"body\":$NNOW,\"folder\":$NNOW,\"visibility\":$NNOW,\"deleted\":$NNOW}}]}")
+chk "title from B, body from A" "$(echo "$NR2" | python3 -c "
+import json,sys
+for c in json.load(sys.stdin)['changes']:
+    if c['id']=='$N1': print(c['title'],'|',c['body'])")" "first note, renamed | hello universe"
+
+NDEL=$((NNOW+3000))
+curl -s -o /dev/null "${A[@]}" -X POST $B/api/notes/sync "${JSON[@]}" -d "{\"cursor\":0,\"changes\":[
+  {\"id\":\"$N2\",\"title\":\"second note\",\"body\":\"unrelated text\",\"folder\":\"general\",\"visibility\":\"private\",\"deleted\":1,\"createdAt\":$NNOW,\"ts\":{\"title\":$NNOW,\"body\":$NNOW,\"folder\":$NNOW,\"visibility\":$NNOW,\"deleted\":$NDEL}}]}"
+chk "delete propagates" "$(curl -s "${A[@]}" -X POST $B/api/notes/sync "${JSON[@]}" -d '{"cursor":0,"changes":[]}' | python3 -c "
+import json,sys
+print([c['deleted'] for c in json.load(sys.stdin)['changes'] if c['id']=='$N2'][0])")" 1
+
+echo "== notes: full-text search =="
+N3=$(uuidgen)
+curl -s -o /dev/null "${A[@]}" -X POST $B/api/notes/sync "${JSON[@]}" -d "{\"cursor\":0,\"changes\":[
+  {\"id\":\"$N3\",\"title\":\"practice log\",\"body\":\"xylophone lessons went well today\",\"folder\":\"music\",\"visibility\":\"private\",\"deleted\":0,\"createdAt\":$NNOW,\"ts\":$(nts $NNOW $NNOW)}]}"
+chk "grep finds a real match"   "$(curl -s "${A[@]}" "$B/api/notes/search?q=xylophone" | python3 -c "
+import json,sys
+print(any(n['id']=='$N3' for n in json.load(sys.stdin)['notes']))")" True
+chk "grep excludes non-matches" "$(curl -s "${A[@]}" "$B/api/notes/search?q=xylophone" | python3 -c "
+import json,sys
+print(any(n['id']=='$N1' for n in json.load(sys.stdin)['notes']))")" False
+chk "grep respects folder filter" "$(curl -s "${A[@]}" "$B/api/notes/search?q=xylophone&folder=general" | python3 -c "
+import json,sys
+print(len(json.load(sys.stdin)['notes']))")" 0
+
+echo "== notes: publish lock (NOTES-PLAN.md §1.1) =="
+N4=$(uuidgen)
+curl -s -o /dev/null "${A[@]}" -X POST $B/api/notes/sync "${JSON[@]}" -d "{\"cursor\":0,\"changes\":[
+  {\"id\":\"$N4\",\"title\":\"original title\",\"body\":\"original body\",\"folder\":\"general\",\"visibility\":\"public\",\"deleted\":0,\"createdAt\":$NNOW,\"ts\":$(nts $NNOW $NNOW)}]}"
+# Attempt a content edit that keeps it public — the content must not land.
+NLOCKED=$((NNOW+1000))
+curl -s -o /dev/null "${A[@]}" -X POST $B/api/notes/sync "${JSON[@]}" -d "{\"cursor\":0,\"changes\":[
+  {\"id\":\"$N4\",\"title\":\"sneaky edit while still public\",\"body\":\"original body\",\"folder\":\"general\",\"visibility\":\"public\",\"deleted\":0,\"createdAt\":$NNOW,\"ts\":{\"title\":$NLOCKED,\"body\":$NNOW,\"folder\":$NNOW,\"visibility\":$NNOW,\"deleted\":$NNOW}}]}"
+chk "content edit blocked while public" "$(curl -s "${A[@]}" -X POST $B/api/notes/sync "${JSON[@]}" -d '{"cursor":0,"changes":[]}' | python3 -c "
+import json,sys
+print([c['title'] for c in json.load(sys.stdin)['changes'] if c['id']=='$N4'][0])")" "original title"
+# The reverted title's ts must be newer than what the blocked client sent
+# ($NLOCKED) — not reverted back to the original ts — or a real client's own
+# naive "higher timestamp wins" merge would see its rejected edit as still
+# the newest thing anyone wrote and silently re-adopt it locally, reporting
+# a save that never actually landed server-side.
+chk "reverted ts is newer than the blocked write, not older" "$(curl -s "${A[@]}" -X POST $B/api/notes/sync "${JSON[@]}" -d '{"cursor":0,"changes":[]}' | python3 -c "
+import json,sys
+ts=[c['ts']['title'] for c in json.load(sys.stdin)['changes'] if c['id']=='$N4'][0]
+print(ts > $NLOCKED)")" True
+# Same edit, but also taking it private in the same write — must land.
+NUNLOCK=$((NNOW+2000))
+curl -s -o /dev/null "${A[@]}" -X POST $B/api/notes/sync "${JSON[@]}" -d "{\"cursor\":0,\"changes\":[
+  {\"id\":\"$N4\",\"title\":\"edited after unpublishing\",\"body\":\"original body\",\"folder\":\"general\",\"visibility\":\"private\",\"deleted\":0,\"createdAt\":$NNOW,\"ts\":{\"title\":$NUNLOCK,\"body\":$NNOW,\"folder\":$NNOW,\"visibility\":$NUNLOCK,\"deleted\":$NNOW}}]}"
+chk "content edit lands once private" "$(curl -s "${A[@]}" -X POST $B/api/notes/sync "${JSON[@]}" -d '{"cursor":0,"changes":[]}' | python3 -c "
+import json,sys
+print([c['title'] for c in json.load(sys.stdin)['changes'] if c['id']=='$N4'][0])")" "edited after unpublishing"
 
 echo "== agent =="
 # Cookie-only, deliberately (PLAN.md §4.1) — this is a chat feature, not a
